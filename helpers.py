@@ -42,7 +42,7 @@ ALTERATION_COLORS = {
 
 def plot_raster(data, title='Raster Data', cmap=CONTINUOUS_CMAP,
                 vmin=None, vmax=None, ax=None, colorbar=True,
-                extent=None, robust_stretch=True):
+                extent=None, robust_stretch=True, origin='upper'):
     """
     Plot a 2D raster array with optional colorbar.
 
@@ -79,7 +79,7 @@ def plot_raster(data, title='Raster Data', cmap=CONTINUOUS_CMAP,
             vmin, vmax = np.percentile(valid_data, [2, 98])
 
     im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax,
-                   extent=extent, origin='upper')
+                   extent=extent, origin=origin)
     ax.set_title(title)
 
     if colorbar:
@@ -92,7 +92,8 @@ def plot_raster(data, title='Raster Data', cmap=CONTINUOUS_CMAP,
 
 def plot_vector(gdf, column=None, title='Vector Data', cmap=CONTINUOUS_CMAP,
                 categorical=False, ax=None, legend=True, edgecolor='black',
-                linewidth=0.5, alpha=0.7, markersize=30):
+                linewidth=0.5, alpha=0.7, markersize=30,
+                categorical_cmap=None):
     """
     Plot a GeoDataFrame with optional column coloring.
 
@@ -132,8 +133,13 @@ def plot_vector(gdf, column=None, title='Vector Data', cmap=CONTINUOUS_CMAP,
 
     if column is not None:
         if categorical:
+            cmap_obj = categorical_cmap
+            if cmap_obj is None:
+                cmap_obj = mcolors.ListedColormap(
+                    CATEGORICAL_COLORS[:gdf[column].nunique()]
+                )
             gdf.plot(column=column, ax=ax, legend=legend,
-                     cmap=mcolors.ListedColormap(CATEGORICAL_COLORS[:gdf[column].nunique()]),
+                     cmap=cmap_obj,
                      edgecolor=edgecolor, linewidth=linewidth, alpha=alpha,
                      markersize=markersize if 'Point' in geom_type else None)
         else:
@@ -398,19 +404,20 @@ def plot_missing_data_pattern(df, figsize=(12, 6)):
     """
     fig, axes = plt.subplots(1, 2, figsize=figsize)
 
-    # Missing percentage bar chart
+    # Missing percentage histogram
     missing_pct = (df.isnull().sum() / len(df)) * 100
     missing_pct = missing_pct[missing_pct > 0].sort_values(ascending=True)
 
     if len(missing_pct) > 0:
-        missing_pct.plot(kind='barh', ax=axes[0], color='coral')
+        axes[0].hist(missing_pct.values, bins=10, color='coral', edgecolor='white')
         axes[0].set_xlabel('Missing %')
-        axes[0].set_title('Missing Data by Column')
+        axes[0].set_ylabel('Number of Columns')
+        axes[0].set_title('Missing Data Distribution')
         axes[0].axvline(x=50, color='red', linestyle='--', alpha=0.5)
     else:
         axes[0].text(0.5, 0.5, 'No missing data', ha='center', va='center',
                      transform=axes[0].transAxes, fontsize=14)
-        axes[0].set_title('Missing Data by Column')
+        axes[0].set_title('Missing Data Distribution')
 
     # Missing data heatmap (sample if large)
     sample_df = df.iloc[:min(100, len(df)), :min(20, len(df.columns))]
@@ -613,7 +620,7 @@ def plot_interpolation_results(original_points, original_values,
 
     # Interpolated surface
     plot_raster(interpolated_grid, ax=axes[1], title=f'{method_name} Result',
-                extent=extent, robust_stretch=False)
+                extent=extent, robust_stretch=False, origin='lower')
 
     # Overlay points on interpolated surface
     axes[1].scatter(original_points[:, 0], original_points[:, 1],
@@ -623,7 +630,7 @@ def plot_interpolation_results(original_points, original_values,
     return fig, axes
 
 
-def plot_pca_results(pca, feature_names, figsize=(14, 5)):
+def plot_pca_results(pca, feature_names, figsize=(14, 5), annot=False):
     """
     Plot PCA explained variance and loadings.
 
@@ -665,7 +672,7 @@ def plot_pca_results(pca, feature_names, figsize=(14, 5)):
     )
 
     import seaborn as sns
-    sns.heatmap(loadings, cmap='RdBu_r', center=0, annot=True,
+    sns.heatmap(loadings, cmap='RdBu_r', center=0, annot=annot,
                 fmt='.2f', ax=axes[1])
     axes[1].set_title('PCA Loadings')
 
@@ -721,7 +728,8 @@ def plot_clustering_results(data, labels, centers=None, title='Clustering Result
     return ax
 
 
-def plot_elbow_silhouette(k_range, inertias, silhouettes, figsize=(14, 5)):
+def plot_elbow_silhouette(k_range, inertias, silhouettes, figsize=(14, 5),
+                          preferred_k=None):
     """
     Plot elbow curve and silhouette scores for K-means.
 
@@ -756,10 +764,16 @@ def plot_elbow_silhouette(k_range, inertias, silhouettes, figsize=(14, 5)):
     axes[1].set_title('Silhouette Analysis')
     axes[1].grid(True, alpha=0.3)
 
-    # Mark best k
-    best_k_idx = np.argmax(silhouettes)
-    axes[1].axvline(k_range[best_k_idx], color='red', linestyle='--',
-                    label=f'Best k={k_range[best_k_idx]}')
+    # Mark preferred or best k
+    if preferred_k is None:
+        best_k_idx = np.argmax(silhouettes)
+        mark_k = k_range[best_k_idx]
+        label = f'Best k={mark_k}'
+    else:
+        mark_k = preferred_k
+        label = f'Preferred k={mark_k}'
+
+    axes[1].axvline(mark_k, color='red', linestyle='--', label=label)
     axes[1].legend()
 
     plt.tight_layout()
@@ -1271,3 +1285,273 @@ def add_missing_data(df, missing_pct=0.1, columns=None, pattern='random',
         df_missing.loc[missing_idx, col] = np.nan
 
     return df_missing
+
+
+# =============================================================================
+# I/O helpers
+# =============================================================================
+
+def load_raster(path):
+    """Load a single-band raster and return data, extent, and CRS."""
+    import rasterio
+
+    with rasterio.open(path) as src:
+        data = src.read(1)
+        extent = (src.bounds.left, src.bounds.right, src.bounds.bottom, src.bounds.top)
+        return data, extent, src.crs
+
+
+def load_vector(path):
+    """Load a vector dataset into a GeoDataFrame."""
+    import geopandas as gpd
+
+    return gpd.read_file(path)
+
+
+def ensure_xy(gdf):
+    """Ensure GeoDataFrame has X/Y columns based on geometry."""
+    if 'X' not in gdf.columns or 'Y' not in gdf.columns:
+        gdf = gdf.copy()
+        gdf['X'] = gdf.geometry.x
+        gdf['Y'] = gdf.geometry.y
+    return gdf
+
+
+def rasterize_lithology(gdf, shape, extent, value_col=None):
+    """Rasterize a lithology GeoDataFrame into a categorical raster."""
+    import pandas as pd
+    from rasterio.features import rasterize
+    from rasterio.transform import from_bounds
+
+    xmin, xmax, ymin, ymax = extent
+    transform = from_bounds(xmin, ymin, xmax, ymax, shape[1], shape[0])
+
+    if value_col is None:
+        candidates = [c for c in gdf.columns if c.lower() in ['lithology', 'unit', 'rocktype']]
+        value_col = candidates[0] if candidates else None
+
+    if value_col is None:
+        values = pd.factorize(gdf.index)[0] + 1
+        shapes = list(zip(gdf.geometry, values))
+    else:
+        values = pd.factorize(gdf[value_col])[0] + 1
+        shapes = list(zip(gdf.geometry, values))
+
+    raster = rasterize(
+        shapes,
+        out_shape=shape,
+        transform=transform,
+        fill=0,
+        dtype='int32',
+    )
+    return raster
+
+
+# =============================================================================
+# Interpolation helpers
+# =============================================================================
+
+def idw_interpolation(sample_coords, sample_values, grid_points, power=2, n_neighbors=12):
+    """Inverse Distance Weighting interpolation."""
+    from scipy.spatial import KDTree
+
+    tree = KDTree(sample_coords)
+    distances, indices = tree.query(grid_points, k=n_neighbors)
+    distances = np.maximum(distances, 1e-10)
+    weights = 1 / (distances ** power)
+    weights_sum = weights.sum(axis=1, keepdims=True)
+    weights_normalized = weights / weights_sum
+    interpolated = np.sum(weights_normalized * sample_values[indices], axis=1)
+    return interpolated
+
+
+def compute_semivariogram(coords, values, n_lags=12, max_lag=None):
+    """Compute empirical semivariogram."""
+    from scipy.spatial.distance import cdist
+
+    dist_matrix = cdist(coords, coords)
+    if max_lag is None:
+        max_lag = np.percentile(dist_matrix, 50)
+
+    lag_edges = np.linspace(0, max_lag, n_lags + 1)
+    lag_centers = (lag_edges[:-1] + lag_edges[1:]) / 2
+
+    semivariance = []
+    for i in range(n_lags):
+        mask = (dist_matrix > lag_edges[i]) & (dist_matrix <= lag_edges[i + 1])
+        if mask.sum() > 0:
+            ii, jj = np.where(mask)
+            sq_diff = (values[ii] - values[jj]) ** 2
+            semivariance.append(0.5 * np.mean(sq_diff))
+        else:
+            semivariance.append(np.nan)
+
+    return lag_centers, np.array(semivariance)
+
+
+def spherical_variogram(h, nugget, sill, range_param):
+    """Spherical variogram model."""
+    h = np.asarray(h)
+    result = np.zeros_like(h, dtype=float)
+
+    mask = h > 0
+    h_norm = h[mask] / range_param
+
+    within_range = h_norm <= 1
+    result_temp = np.zeros_like(h_norm)
+    result_temp[within_range] = nugget + (sill - nugget) * (1.5 * h_norm[within_range] - 0.5 * h_norm[within_range]**3)
+    result_temp[~within_range] = sill
+
+    result[mask] = result_temp
+    return result
+
+
+def fit_variogram(lags, semivar):
+    """Simple variogram fitting."""
+    from scipy.optimize import curve_fit
+
+    valid = ~np.isnan(semivar)
+    lags_clean = lags[valid]
+    semivar_clean = semivar[valid]
+
+    if len(lags_clean) < 3:
+        return 0, np.max(semivar_clean), np.max(lags_clean)
+
+    nugget_init = semivar_clean[0] if semivar_clean[0] > 0 else 0
+    sill_init = np.max(semivar_clean)
+    range_init = np.max(lags_clean) / 2
+
+    try:
+        popt, _ = curve_fit(
+            spherical_variogram,
+            lags_clean,
+            semivar_clean,
+            p0=[nugget_init, sill_init, range_init],
+            bounds=([0, 0, 1], [sill_init, sill_init * 2, np.max(lags_clean) * 2]),
+            maxfev=5000,
+        )
+        return popt
+    except Exception:
+        return nugget_init, sill_init, range_init
+
+
+def ordinary_kriging(sample_coords, sample_values, grid_points, nugget, sill, range_param, n_neighbors=12):
+    """Simple Ordinary Kriging implementation."""
+    from scipy.spatial import KDTree
+
+    tree = KDTree(sample_coords)
+    predictions = np.zeros(len(grid_points))
+    variances = np.zeros(len(grid_points))
+
+    for i, point in enumerate(grid_points):
+        distances, indices = tree.query(point, k=n_neighbors)
+
+        if np.min(distances) < 1e-10:
+            predictions[i] = sample_values[indices[0]]
+            variances[i] = 0
+            continue
+
+        local_coords = sample_coords[indices]
+        local_values = sample_values[indices]
+
+        n = len(local_coords)
+        K = np.zeros((n + 1, n + 1))
+
+        for j in range(n):
+            for k in range(n):
+                dist = np.linalg.norm(local_coords[j] - local_coords[k])
+                K[j, k] = sill - spherical_variogram(dist, nugget, sill, range_param)
+
+        K[n, :n] = 1
+        K[:n, n] = 1
+        K[n, n] = 0
+
+        k0 = np.zeros(n + 1)
+        for j in range(n):
+            dist = np.linalg.norm(local_coords[j] - point)
+            k0[j] = sill - spherical_variogram(dist, nugget, sill, range_param)
+        k0[n] = 1
+
+        try:
+            weights = np.linalg.solve(K, k0)
+            predictions[i] = np.dot(weights[:n], local_values)
+            variances[i] = sill - np.dot(weights[:n], k0[:n]) - weights[n]
+        except Exception:
+            w = 1 / (distances ** 2)
+            predictions[i] = np.sum(w * local_values) / np.sum(w)
+            variances[i] = np.var(local_values)
+
+    return predictions, np.maximum(variances, 0)
+
+
+# =============================================================================
+# Spectral halo helpers
+# =============================================================================
+
+def generate_spectral_index(shape, n_anomalies=3, background=0.3, anomaly_strength=0.4, random_state=42):
+    """Generate synthetic spectral index with anomalous regions."""
+    rng = np.random.default_rng(random_state)
+    data = rng.normal(background, 0.1, shape)
+
+    for _ in range(n_anomalies):
+        cx, cy = rng.integers(20, 80, 2)
+        radius = rng.integers(10, 25)
+        y, x = np.ogrid[:shape[0], :shape[1]]
+        mask = ((x - cx) ** 2 + (y - cy) ** 2) < radius ** 2
+        data[mask] += rng.uniform(anomaly_strength * 0.5, anomaly_strength)
+
+    return np.clip(data, 0, 1)
+
+
+def compute_halo_detection(index_data, presence_quantile=0.9, sigma_px=5,
+                           clip_q=(0.01, 0.99), valid_mask=None):
+    """Detect high-density halos using KDE and K-means."""
+    from sklearn.cluster import KMeans
+    from scipy.ndimage import gaussian_filter
+
+    data = np.array(index_data, dtype=float)
+    data[~np.isfinite(data)] = np.nan
+
+    if np.all(np.isnan(data)):
+        shape = data.shape
+        return np.zeros(shape), np.zeros(shape, dtype=bool)
+
+    lo, hi = np.nanquantile(data, clip_q)
+    clipped = np.clip(data, lo, hi)
+    median_val = np.nanmedian(clipped)
+    iqr = np.nanpercentile(clipped, 75) - np.nanpercentile(clipped, 25)
+    if not np.isfinite(iqr) or iqr == 0:
+        std = np.nanstd(clipped)
+        iqr = std if np.isfinite(std) and std > 0 else 1.0
+    z_scored = (clipped - median_val) / iqr
+    z_scored = np.where(np.isfinite(z_scored), z_scored, median_val)
+
+    threshold = np.nanquantile(z_scored, presence_quantile)
+    presence_mask = z_scored >= threshold
+    if valid_mask is not None:
+        presence_mask = presence_mask & valid_mask
+
+    kde_surface = gaussian_filter(presence_mask.astype(float), sigma=sigma_px,
+                                  mode='nearest')
+
+    kde_flat = kde_surface.flatten().reshape(-1, 1)
+    kmeans = KMeans(n_clusters=2, random_state=42, n_init=10)
+    cluster_labels = kmeans.fit_predict(kde_flat).reshape(index_data.shape)
+
+    cluster_means = [kde_surface[cluster_labels == i].mean() for i in range(2)]
+    high_density_label = np.argmax(cluster_means)
+    high_density_mask = cluster_labels == high_density_label
+
+    return kde_surface, high_density_mask
+
+
+def normalize_kde(kde, percentile_low=2, percentile_high=98):
+    """Robust normalization of KDE surface."""
+    data = np.array(kde, dtype=float)
+    data[~np.isfinite(data)] = np.nan
+    if np.all(np.isnan(data)):
+        return np.zeros_like(data)
+
+    p_low, p_high = np.nanpercentile(data, [percentile_low, percentile_high])
+    normalized = (data - p_low) / (p_high - p_low + 1e-10)
+    return np.clip(normalized, 0, 1)
