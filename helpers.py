@@ -1555,3 +1555,38 @@ def normalize_kde(kde, percentile_low=2, percentile_high=98):
     p_low, p_high = np.nanpercentile(data, [percentile_low, percentile_high])
     normalized = (data - p_low) / (p_high - p_low + 1e-10)
     return np.clip(normalized, 0, 1)
+
+
+def map_spectral_indices(spectral_indices):
+    """Map raw spectral index names to canonical names for weighting."""
+    def canonical(name):
+        key = name.lower()
+        if 'clay' in key and ('hydrox' in key or 'aloh' in key):
+            return 'Clay_AlOH'
+        if 'iron_oxide' in key or 'ferric' in key or 'fe3' in key:
+            return 'Iron_Oxide'
+        if 'ferrous' in key or 'fe2' in key:
+            return 'Ferrous_Iron'
+        if 'silica' in key or 'quartz' in key:
+            return 'Silica'
+        if 'gossan' in key:
+            return 'Gossan'
+        if 'laterite' in key:
+            return 'Laterite'
+        if 'sabins' in key or 'hydrothermal' in key or 'alteration' in key:
+            return 'Alt_Composite'
+        return None
+
+    grouped = {}
+    for name, data in spectral_indices.items():
+        canon = canonical(name)
+        if canon is None:
+            continue
+        grouped.setdefault(canon, []).append(np.array(data, dtype=float))
+
+    mapped = {}
+    for canon, arrays in grouped.items():
+        stacked = np.stack(arrays, axis=0)
+        mapped[canon] = np.nanmean(stacked, axis=0)
+
+    return mapped
