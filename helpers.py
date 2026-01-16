@@ -376,16 +376,20 @@ def plot_continuous_vs_categorical(continuous_data, categorical_data,
 # =============================================================================
 
 def plot_distribution(data, title='Distribution', ax=None, bins=50,
-                      show_stats=True, color='steelblue'):
+                      show_stats=True, color='steelblue', ncols=5,
+                      max_plots=None, figsize=None, titles=None):
     """
     Plot histogram with optional statistics overlay.
 
+    If data is a DataFrame, dict, or 2D array-like and ax is None, this will
+    render multiple distributions in a subplot grid.
+
     Parameters
     ----------
-    data : array-like
+    data : array-like, pandas.DataFrame, dict, or 2D array-like
         Data to plot
     title : str
-        Plot title
+        Plot title (used as suptitle for subplot grids)
     ax : matplotlib.axes.Axes
         Axes to plot on
     bins : int
@@ -394,12 +398,57 @@ def plot_distribution(data, title='Distribution', ax=None, bins=50,
         Whether to show mean/median/std
     color : str
         Histogram color
+    ncols : int
+        Number of columns for subplot grids
+    max_plots : int or None
+        Max number of distributions to plot in grids
+    figsize : tuple or None
+        Figure size for grids
+    titles : list or None
+        Titles for 2D array-like data
 
     Returns
     -------
     ax : matplotlib.axes.Axes
     """
     if ax is None:
+        is_df = isinstance(data, pd.DataFrame)
+        is_dict = isinstance(data, dict)
+        is_2d = isinstance(data, (list, tuple, np.ndarray)) and np.ndim(data) == 2
+        if is_df or is_dict or is_2d:
+            if is_df:
+                series_dict = {col: data[col].values for col in data.columns}
+            elif is_dict:
+                series_dict = data
+            else:
+                if titles is None:
+                    titles = [f'Var {i + 1}' for i in range(np.shape(data)[1])]
+                series_dict = {t: np.array(data)[:, i] for i, t in enumerate(titles)}
+
+            items = list(series_dict.items())
+            if max_plots is not None:
+                items = items[:max_plots]
+
+            n = len(items)
+            ncols = min(max(ncols, 1), n)
+            nrows = int(np.ceil(n / ncols))
+            if figsize is None:
+                figsize = (3 * ncols, 2.5 * nrows)
+
+            fig, axes = plt.subplots(nrows, ncols, figsize=figsize,
+                                     constrained_layout=True)
+            axes = np.array(axes).flatten()
+            for ax_i, (label, values) in zip(axes, items):
+                plot_distribution(values, title=str(label), ax=ax_i, bins=bins,
+                                  show_stats=show_stats, color=color)
+
+            for ax_i in axes[len(items):]:
+                ax_i.set_visible(False)
+
+            if title:
+                fig.suptitle(title)
+            return axes[0]
+
         fig, ax = plt.subplots(figsize=(8, 5))
 
     data_clean = np.array(data).flatten()
