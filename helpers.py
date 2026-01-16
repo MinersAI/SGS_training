@@ -35,6 +35,24 @@ ALTERATION_COLORS = {
     'Laterite': '#4575b4'
 }
 
+DEFAULT_DATA_CONFIG = {
+    # Rasters
+    "continuous_raster_path": 'data/raster/spectral/idx_clay_hydroxyls.tif',
+    "categorical_raster_path": None,  # GeoTIFF with class labels
+
+    # Vector data
+    "vector_path": 'data/vector/lithology.geojson',
+    "geochem_points_path": 'data/vector/geochem.geojson',
+
+    # Raster data
+    "spectral_indices_dir": 'data/raster/spectral',
+    "geophysics_dir": 'data/raster/geophys',
+
+    # Prospectivity mapping
+    "prospectivity_feature_rasters": [],  # List of raster paths (GeoTIFF)
+    "prospectivity_training_points_path": None,  # GeoJSON with known deposits
+}
+
 
 # =============================================================================
 # Data summary functions
@@ -563,9 +581,9 @@ def plot_missing_data_pattern(df, figsize=(12, 6)):
     """
     fig, axes = plt.subplots(1, 2, figsize=figsize)
 
-    # Missing percentage by column (sorted)
+    # Missing percentage by column (preserve original column order)
     missing_pct = (df.isnull().sum() / len(df)) * 100
-    missing_pct = missing_pct[missing_pct > 0].sort_values(ascending=False)
+    missing_pct = missing_pct[missing_pct > 0]
 
     if len(missing_pct) > 0:
         axes[0].bar(range(len(missing_pct)), missing_pct.values, color='coral', edgecolor='white')
@@ -1585,8 +1603,10 @@ def require_one(path_candidates, label):
     raise ValueError(f"Missing required output for {label}: {', '.join(str(p) for p in candidates)}")
 
 
-def load_training_data(data_config):
-    """Load raster/vector inputs defined in DATA_CONFIG."""
+def load_training_data(data_config=None):
+    """Load raster/vector inputs defined in data_config."""
+    if data_config is None:
+        data_config = DEFAULT_DATA_CONFIG
     continuous_path = require_path(data_config.get('continuous_raster_path'), 'continuous_raster_path')
     continuous_raster, raster_extent, raster_crs = load_raster(continuous_path)
 
@@ -1616,8 +1636,11 @@ def load_training_data(data_config):
     }
 
 
-def plot_data_format_examples(data_config, vector_gdf, geochem_gdf, figsize=(12, 10)):
+def plot_data_format_examples(data_config=None, vector_gdf=None, geochem_gdf=None,
+                              figsize=(12, 10)):
     """Plot example vector and raster formats from configured paths."""
+    if data_config is None:
+        data_config = DEFAULT_DATA_CONFIG
     from pathlib import Path
 
     fig, axes = plt.subplots(2, 2, figsize=figsize)
@@ -1663,8 +1686,37 @@ def prepare_geochem_features(geochem_gdf, exclude_cols=None, value_hint='cu'):
 def log_transform(values):
     """Apply a stable log1p transform with a non-negative shift."""
     values = np.array(values, dtype=float)
+    if values.ndim == 2:
+        shift = np.nanmin(values, axis=0)
+        return np.log1p(values - shift + 1)
     shift = np.nanmin(values)
     return np.log1p(values - shift + 1)
+
+
+def apply_transform(values, transform='log1p'):
+    """Apply a named transform to values."""
+    if transform in (None, 'none', 'identity'):
+        return np.array(values, dtype=float)
+    if transform == 'log1p':
+        return log_transform(values)
+    raise ValueError(f"Unsupported transform: {transform}")
+
+
+def clip_quantiles(values, quantiles=None):
+    """Clip values to the provided quantile range."""
+    if quantiles is None:
+        return np.array(values, dtype=float)
+    if not isinstance(quantiles, (tuple, list)) or len(quantiles) != 2:
+        raise ValueError("quantiles must be a (low, high) tuple")
+    q_low, q_high = quantiles
+    values = np.array(values, dtype=float)
+    if values.ndim == 2:
+        lows = np.nanquantile(values, q_low, axis=0)
+        highs = np.nanquantile(values, q_high, axis=0)
+        return np.clip(values, lows, highs)
+    low = np.nanquantile(values, q_low)
+    high = np.nanquantile(values, q_high)
+    return np.clip(values, low, high)
 
 
 def scale_features(df, feature_cols):
@@ -1686,7 +1738,20 @@ def mean_impute(values):
     return imputed_values, imputer
 
 
-def prepare_pca_inputs(geochem_gdf, feature_cols, exclude_cols=None):
+def impute_values(values, strategy='mean'):
+    """Apply imputation and return imputed values and the imputer."""
+    from sklearn.impute import SimpleImputer
+
+    if strategy not in {'mean', 'median', 'most_frequent'}:
+        raise ValueError(f"Unsupported impute strategy: {strategy}")
+    imputer = SimpleImputer(strategy=strategy)
+    imputed_values = imputer.fit_transform(values)
+    return imputed_values, imputer
+
+
+def prepare_pca_inputs(geochem_gdf, feature_cols, exclude_cols=None,
+                       transform='log1p', scale_features=True,
+                       clip_quantiles_range=None):
     """Prepare scaled geochemistry inputs for PCA."""
     from sklearn.preprocessing import StandardScaler
 
@@ -1696,16 +1761,20 @@ def prepare_pca_inputs(geochem_gdf, feature_cols, exclude_cols=None):
     pca_cols = [c for c in feature_cols if c not in pca_exclude]
 
     X_geochem = geochem_gdf[pca_cols].values
-    X_log = np.log(X_geochem + 1)
+    X_geochem = clip_quantiles(X_geochem, clip_quantiles_range)
+    X_transformed = apply_transform(X_geochem, transform=transform)
 
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_log)
+    scaler = None
+    X_scaled = X_transformed
+    if scale_features:
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_transformed)
 
     print(f"Original dimensions: {X_geochem.shape[1]}")
 
     return {
         'X_geochem': X_geochem,
-        'X_log': X_log,
+        'X_log': X_transformed,
         'X_scaled': X_scaled,
         'pca_cols': pca_cols,
         'scaler': scaler,
@@ -1750,23 +1819,31 @@ def plot_pca_variance(pca, figsize=(7, 5)):
     return fig, ax
 
 
-def plot_pca_loadings(pca, feature_names, n_components=3, annot=False, figsize=(7, 5)):
-    """Plot PCA loadings heatmap."""
-    import seaborn as sns
-
+def plot_pca_loadings(pca, feature_names, n_components=5, top_n_pos=5, top_n_neg=5,
+                      figsize=(8, 10)):
+    """Plot top positive and negative PCA loadings per component."""
     n_show = min(n_components, len(pca.components_))
-    loadings = pd.DataFrame(
-        pca.components_[:n_show].T,
-        columns=[f'PC{i+1}' for i in range(n_show)],
-        index=feature_names
-    )
+    fig, axes = plt.subplots(n_show, 1, figsize=figsize)
+    axes = np.atleast_1d(axes)
 
-    fig, ax = plt.subplots(figsize=figsize)
-    sns.heatmap(loadings, cmap='RdBu_r', center=0, annot=annot, fmt='.2f', ax=ax)
-    ax.set_title('PCA Loadings')
+    for i, ax in enumerate(axes[:n_show]):
+        loadings = pd.Series(pca.components_[i], index=feature_names)
+        top_pos = loadings[loadings > 0].sort_values(ascending=False).head(top_n_pos)
+        top_neg = loadings[loadings < 0].sort_values().head(top_n_neg)
+        top = pd.concat([top_neg, top_pos]).sort_values()
+        colors = ['#d95f02' if v < 0 else '#1b9e77' for v in top.values]
+        ax.barh(top.index, top.values, color=colors)
+        ax.axvline(0, color='black', linewidth=1)
+        var_pct = pca.explained_variance_ratio_[i] * 100
+        ax.set_title(
+            f'PC{i+1} Top +{top_n_pos} / -{top_n_neg} Loadings '
+            f'({var_pct:.1f}% variance)'
+        )
+        ax.set_xlabel('Loading')
+        ax.tick_params(axis='y', labelsize=8)
 
     plt.tight_layout()
-    return fig, ax
+    return fig, axes
 
 
 def prepare_interpolation_inputs(geochem_gdf, value_col, grid_resolution=60, padding=0.05):
@@ -1891,6 +1968,42 @@ def plot_spatial_pca_components(geochem_gdf, X_pca, pca, n_components=3,
 
     plt.tight_layout()
     return fig, axes
+
+
+def interactive_spatial_pca_components(geochem_gdf, X_pca, pca, n_components=5,
+                                       cmap=DIVERGING_CMAP, markersize=30,
+                                       figsize=(6, 5)):
+    """Interactive PCA component map with dropdown selection."""
+    import ipywidgets as widgets
+    from IPython.display import display
+
+    n_show = min(n_components, X_pca.shape[1])
+    options = [
+        (f'PC{i+1} ({pca.explained_variance_ratio_[i]*100:.1f}% variance)', i)
+        for i in range(n_show)
+    ]
+    comp_dropdown = widgets.Dropdown(options=options, description='Component')
+    output = widgets.Output()
+
+    def render(*_):
+        output.clear_output(wait=True)
+        with output:
+            fig, ax = plt.subplots(figsize=figsize)
+            i = comp_dropdown.value
+            gdf_temp = geochem_gdf.copy()
+            gdf_temp['component'] = X_pca[:, i]
+            gdf_temp.plot(column='component', ax=ax, legend=True,
+                          cmap=cmap, markersize=markersize)
+            ax.set_title(
+                f'PC{i+1} ({pca.explained_variance_ratio_[i]*100:.1f}% variance)'
+            )
+            display(fig)
+            plt.close(fig)
+
+    comp_dropdown.observe(render, names='value')
+    render()
+    display(widgets.VBox([comp_dropdown, output]))
+    return comp_dropdown
 
 
 def run_pca_workflow(geochem_gdf, feature_cols, exclude_cols=None, show=True):
@@ -2146,10 +2259,12 @@ def summarize_alteration_classes(class_map, class_names):
         print(f"{i}: {name} ({count} pixels, {count / class_map.size * 100:.1f}%)")
 
 
-def load_spectral_indices_dir(spectral_dir):
+def load_spectral_indices_dir(spectral_dir=None):
     """Load spectral indices GeoTIFFs from a directory."""
     from pathlib import Path
 
+    if spectral_dir is None:
+        spectral_dir = DEFAULT_DATA_CONFIG.get('spectral_indices_dir')
     spectral_dir = require_path(spectral_dir, 'spectral_indices_dir', allow_dir=True)
     spectral_indices = {}
     spectral_extent = None
@@ -2344,7 +2459,7 @@ def display_data_cube_viewer(ml_dir='data/ML', cube_name='DCG.nc'):
     from pathlib import Path
     import xarray as xr
     import ipywidgets as widgets
-    from IPython.display import display
+    from IPython.display import display, clear_output
 
     ml_dir = require_path(ml_dir, 'ml_dir', allow_dir=True)
     cube_path = require_one([Path(ml_dir) / cube_name], cube_name)
@@ -2354,56 +2469,43 @@ def display_data_cube_viewer(ml_dir='data/ML', cube_name='DCG.nc'):
     if not cube.data_vars:
         raise ValueError(f"No data variables found in {cube_path}")
 
-    var_names = list(cube.data_vars)
-    var_dropdown = widgets.Dropdown(options=var_names, description='Variable')
-    layer_slider = widgets.IntSlider(min=0, max=0, step=1, value=0, description='Layer')
-
-    viewer_fig, viewer_ax = plt.subplots(figsize=(6, 5))
-    viewer_display = display(viewer_fig, display_id=True)
-    plt.close(viewer_fig)
-
-    def update_slider(*args):
-        array = cube[var_dropdown.value]
+    options = []
+    for name, array in cube.data_vars.items():
         if array.ndim <= 2:
-            layer_slider.max = 0
-            layer_slider.value = 0
-            layer_slider.disabled = True
-        else:
-            layer_dim = int(np.prod(array.shape[:-2]))
-            layer_slider.max = max(layer_dim - 1, 0)
-            layer_slider.value = 0
-            layer_slider.disabled = False
-
-    def render(*args, ax=viewer_ax, fig=viewer_fig):
-        array = cube[var_dropdown.value]
-        ax.clear()
-
-        if array.ndim == 1:
-            ax.plot(array.values)
-            ax.set_title(var_dropdown.value)
-            ax.grid(True, alpha=0.3)
-        elif array.ndim == 2:
-            ax.imshow(array.values, cmap='viridis')
-            ax.set_title(var_dropdown.value)
-            ax.axis('off')
+            options.append((name, (name, None)))
         else:
             stacked = array.stack(layer=array.dims[:-2])
-            data = stacked.isel(layer=layer_slider.value).values
-            ax.imshow(data, cmap='viridis')
-            ax.set_title(f"{var_dropdown.value} [layer {layer_slider.value + 1}]")
-            ax.axis('off')
+            for i in range(stacked.shape[0]):
+                options.append((f'{name} [layer {i + 1}]', (name, i)))
 
-        fig.canvas.draw_idle()
-        viewer_display.update(fig)
+    var_dropdown = widgets.Dropdown(options=options, description='Variable')
+    output = widgets.Output()
 
-    update_slider()
-    render()
+    def render(*_):
+        with output:
+            clear_output(wait=True)
+            fig, ax = plt.subplots(figsize=(6, 5))
+            name, layer = var_dropdown.value
+            array = cube[name]
+            if array.ndim == 1:
+                ax.plot(array.values)
+                ax.set_title(name)
+                ax.grid(True, alpha=0.3)
+            elif array.ndim == 2:
+                ax.imshow(array.values, cmap='viridis')
+                ax.set_title(name)
+                ax.axis('off')
+            else:
+                stacked = array.stack(layer=array.dims[:-2])
+                data = stacked.isel(layer=layer).values
+                ax.imshow(data, cmap='viridis')
+                ax.set_title(f'{name} [layer {layer + 1}]')
+                ax.axis('off')
+            plt.show()
 
-    var_dropdown.observe(update_slider, names='value')
     var_dropdown.observe(render, names='value')
-    layer_slider.observe(render, names='value')
-
-    display(widgets.VBox([var_dropdown, layer_slider]))
+    render()
+    display(widgets.VBox([var_dropdown, output]))
 
 
 def get_ml_artifacts(ml_dir):
