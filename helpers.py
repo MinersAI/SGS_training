@@ -587,11 +587,27 @@ def plot_missing_data_pattern(df, figsize=(12, 6)):
 
     if len(missing_pct) > 0:
         axes[0].bar(range(len(missing_pct)), missing_pct.values, color='coral', edgecolor='white')
-        axes[0].set_xticks(range(len(missing_pct)))
-        axes[0].set_xticklabels(missing_pct.index, rotation=45, ha='right')
         axes[0].set_ylabel('Missing %')
         axes[0].set_title('Missing % by Column')
         axes[0].axhline(y=50, color='red', linestyle='--', alpha=0.5)
+
+        # Handle x-axis labels based on number of columns
+        n_cols = len(missing_pct)
+        if n_cols <= 15:
+            # Show all labels
+            axes[0].set_xticks(range(n_cols))
+            axes[0].set_xticklabels(missing_pct.index, rotation=45, ha='right', fontsize=8)
+        elif n_cols <= 30:
+            # Show every other label
+            step = 2
+            axes[0].set_xticks(range(0, n_cols, step))
+            axes[0].set_xticklabels(missing_pct.index[::step], rotation=45, ha='right', fontsize=7)
+        else:
+            # Show every nth label to keep ~10-15 labels visible
+            step = max(n_cols // 12, 3)
+            axes[0].set_xticks(range(0, n_cols, step))
+            axes[0].set_xticklabels(missing_pct.index[::step], rotation=45, ha='right', fontsize=7)
+        axes[0].set_xlabel(f'Columns ({n_cols} with missing data)')
     else:
         axes[0].text(0.5, 0.5, 'No missing data', ha='center', va='center',
                      transform=axes[0].transAxes, fontsize=14)
