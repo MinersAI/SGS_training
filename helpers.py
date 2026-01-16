@@ -3,6 +3,9 @@ Helper functions for geospatial ML training notebook.
 Contains plotting utilities and common operations to keep the notebook clean.
 """
 
+import os
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -19,6 +22,9 @@ warnings.filterwarnings('ignore', category=FutureWarning)
 # =============================================================================
 # Color palettes and constants
 # =============================================================================
+
+PROJECT_ROOT = Path(os.environ.get("SGS_PROJECT_ROOT", Path(__file__).resolve().parent)).resolve()
+DATA_ROOT = Path(os.environ.get("SGS_DATA_ROOT", PROJECT_ROOT / "data")).resolve()
 
 CONTINUOUS_CMAP = 'viridis'
 DIVERGING_CMAP = 'RdYlBu_r'
@@ -37,16 +43,16 @@ ALTERATION_COLORS = {
 
 DEFAULT_DATA_CONFIG = {
     # Rasters
-    "continuous_raster_path": 'data/raster/spectral/idx_clay_hydroxyls.tif',
+    "continuous_raster_path": DATA_ROOT / 'raster/spectral/idx_clay_hydroxyls.tif',
     "categorical_raster_path": None,  # GeoTIFF with class labels
 
     # Vector data
-    "vector_path": 'data/vector/lithology.geojson',
-    "geochem_points_path": 'data/vector/geochem.geojson',
+    "vector_path": DATA_ROOT / 'vector/lithology.geojson',
+    "geochem_points_path": DATA_ROOT / 'vector/geochem.geojson',
 
     # Raster data
-    "spectral_indices_dir": 'data/raster/spectral',
-    "geophysics_dir": 'data/raster/geophys',
+    "spectral_indices_dir": DATA_ROOT / 'raster/spectral',
+    "geophysics_dir": DATA_ROOT / 'raster/geophys',
 
     # Prospectivity mapping
     "prospectivity_feature_rasters": [],  # List of raster paths (GeoTIFF)
@@ -1590,13 +1596,19 @@ def rasterize_lithology(gdf, shape, extent, value_col=None):
 # Notebook workflow helpers
 # =============================================================================
 
+def resolve_path(path):
+    """Return a project-rooted absolute path for relative inputs."""
+    p = Path(path)
+    if not p.is_absolute():
+        p = PROJECT_ROOT / p
+    return p
+
+
 def require_path(path, name, allow_dir=False):
     """Validate that a required path exists."""
-    from pathlib import Path
-
     if not path:
         raise ValueError(f"Missing required path for {name}.")
-    p = Path(path)
+    p = resolve_path(path)
     if allow_dir:
         if not p.exists() or not p.is_dir():
             raise ValueError(f"{name} must be an existing directory: {path}")
@@ -1608,11 +1620,9 @@ def require_path(path, name, allow_dir=False):
 
 def require_one(path_candidates, label):
     """Return the first existing path from a list of candidates."""
-    from pathlib import Path
-
     candidates = []
     for p in path_candidates:
-        path = Path(p)
+        path = resolve_path(p)
         candidates.append(path)
         if path.exists():
             return path
