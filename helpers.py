@@ -404,20 +404,21 @@ def plot_missing_data_pattern(df, figsize=(12, 6)):
     """
     fig, axes = plt.subplots(1, 2, figsize=figsize)
 
-    # Missing percentage histogram
+    # Missing percentage by column (sorted)
     missing_pct = (df.isnull().sum() / len(df)) * 100
-    missing_pct = missing_pct[missing_pct > 0].sort_values(ascending=True)
+    missing_pct = missing_pct[missing_pct > 0].sort_values(ascending=False)
 
     if len(missing_pct) > 0:
-        axes[0].hist(missing_pct.values, bins=10, color='coral', edgecolor='white')
-        axes[0].set_xlabel('Missing %')
-        axes[0].set_ylabel('Number of Columns')
-        axes[0].set_title('Missing Data Distribution')
-        axes[0].axvline(x=50, color='red', linestyle='--', alpha=0.5)
+        axes[0].bar(range(len(missing_pct)), missing_pct.values, color='coral', edgecolor='white')
+        axes[0].set_xticks(range(len(missing_pct)))
+        axes[0].set_xticklabels(missing_pct.index, rotation=45, ha='right')
+        axes[0].set_ylabel('Missing %')
+        axes[0].set_title('Missing % by Column')
+        axes[0].axhline(y=50, color='red', linestyle='--', alpha=0.5)
     else:
         axes[0].text(0.5, 0.5, 'No missing data', ha='center', va='center',
                      transform=axes[0].transAxes, fontsize=14)
-        axes[0].set_title('Missing Data Distribution')
+        axes[0].set_title('Missing % by Column')
 
     # Missing data heatmap (sample if large)
     sample_df = df.iloc[:min(100, len(df)), :min(20, len(df.columns))]
@@ -722,6 +723,42 @@ def plot_clustering_results(data, labels, centers=None, title='Clustering Result
 
     ax.set_xlabel(f'Feature {feature_x}')
     ax.set_ylabel(f'Feature {feature_y}')
+    ax.set_title(title)
+    ax.legend()
+
+    return ax
+
+
+def compute_cluster_centroids(values, labels):
+    """Compute centroid coordinates for each cluster label."""
+    centroids = []
+    for label in sorted(np.unique(labels)):
+        mask = labels == label
+        centroids.append(values[mask].mean(axis=0))
+    return np.vstack(centroids)
+
+
+def plot_kmeans_pca_scatter(X_pca, labels, title='K-means in PCA Space',
+                            ax=None, markersize=40):
+    """Plot PC1 vs PC2 with cluster centroids."""
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+    n_clusters = len(np.unique(labels))
+    colors = CATEGORICAL_COLORS[:n_clusters]
+
+    for i, color in enumerate(colors):
+        mask = labels == i
+        ax.scatter(X_pca[mask, 0], X_pca[mask, 1],
+                   c=color, label=f'Cluster {i}', alpha=0.7, s=markersize)
+
+    centroids = compute_cluster_centroids(X_pca[:, :2], labels)
+    ax.scatter(centroids[:, 0], centroids[:, 1],
+               c='black', marker='X', s=200, edgecolor='white',
+               linewidth=1.5, label='Centroids')
+
+    ax.set_xlabel('PC1')
+    ax.set_ylabel('PC2')
     ax.set_title(title)
     ax.legend()
 
@@ -1241,8 +1278,8 @@ def add_missing_data(df, missing_pct=0.1, columns=None, pattern='random',
     ----------
     df : pd.DataFrame
         Input DataFrame
-    missing_pct : float
-        Percentage of values to make missing (0-1)
+    missing_pct : float or tuple
+        Percentage of values to make missing (0-1) or (min, max) range
     columns : list
         Columns to add missing values to (None = all numeric)
     pattern : str
@@ -1265,7 +1302,12 @@ def add_missing_data(df, missing_pct=0.1, columns=None, pattern='random',
         if col in ['X', 'Y', 'geometry']:
             continue
 
-        n_missing = int(len(df_missing) * missing_pct)
+        if isinstance(missing_pct, (tuple, list)) and len(missing_pct) == 2:
+            low, high = missing_pct
+            pct = np.random.uniform(low, high)
+        else:
+            pct = missing_pct
+        n_missing = int(len(df_missing) * pct)
 
         if pattern == 'random':
             missing_idx = np.random.choice(df_missing.index, n_missing, replace=False)
@@ -1411,6 +1453,35 @@ def load_training_data(data_config):
     }
 
 
+def plot_data_format_examples(data_config, vector_gdf, geochem_gdf, figsize=(12, 10)):
+    """Plot example vector and raster formats from configured paths."""
+    from pathlib import Path
+
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+
+    plot_vector(vector_gdf, ax=axes[0, 0], title='Lithology (Polygons)', categorical=True)
+    plot_vector(geochem_gdf, ax=axes[0, 1], title='Geochem (Points)', markersize=30)
+
+    geo_dir = require_path(data_config.get('geophysics_dir'), 'geophysics_dir', allow_dir=True)
+    geo_tifs = sorted(Path(geo_dir).glob('*.tif'))
+    if not geo_tifs:
+        raise ValueError(f"No GeoTIFFs found in {geo_dir}")
+
+    geophys_data, geophys_extent, _ = load_raster(geo_tifs[0])
+    plot_raster(geophys_data, ax=axes[1, 0], title='Geophysics (Raster)', extent=geophys_extent)
+
+    spec_dir = require_path(data_config.get('spectral_indices_dir'), 'spectral_indices_dir', allow_dir=True)
+    spec_tifs = sorted(Path(spec_dir).glob('*.tif'))
+    if not spec_tifs:
+        raise ValueError(f"No GeoTIFFs found in {spec_dir}")
+
+    spectral_data, spectral_extent, _ = load_raster(spec_tifs[0])
+    plot_raster(spectral_data, ax=axes[1, 1], title='Spectral Index (Raster)', extent=spectral_extent)
+
+    plt.tight_layout()
+    return fig, axes
+
+
 def prepare_geochem_features(geochem_gdf, exclude_cols=None, value_hint='cu'):
     """Select numeric feature columns and a default value column."""
     numeric_cols = geochem_gdf.select_dtypes(include=[np.number]).columns.tolist()
@@ -1424,6 +1495,32 @@ def prepare_geochem_features(geochem_gdf, exclude_cols=None, value_hint='cu'):
     value_candidates = [c for c in numeric_cols if value_hint in c.lower()]
     value_col = value_candidates[0] if value_candidates else feature_cols[0]
     return feature_cols, value_col
+
+
+def log_transform(values):
+    """Apply a stable log1p transform with a non-negative shift."""
+    values = np.array(values, dtype=float)
+    shift = np.nanmin(values)
+    return np.log1p(values - shift + 1)
+
+
+def scale_features(df, feature_cols):
+    """Standardize numeric features and return a DataFrame."""
+    from sklearn.preprocessing import StandardScaler
+
+    scaler = StandardScaler()
+    scaled_features = scaler.fit_transform(df[feature_cols])
+    scaled_df = pd.DataFrame(scaled_features, columns=feature_cols)
+    return scaled_df, scaler
+
+
+def mean_impute(values):
+    """Apply mean imputation and return imputed values and the imputer."""
+    from sklearn.impute import SimpleImputer
+
+    imputer = SimpleImputer(strategy='mean')
+    imputed_values = imputer.fit_transform(values)
+    return imputed_values, imputer
 
 
 def prepare_pca_inputs(geochem_gdf, feature_cols, exclude_cols=None):
@@ -1474,7 +1571,9 @@ def plot_pca_variance(pca, figsize=(7, 5)):
     ax.set_xlabel('Principal Component')
     ax.set_ylabel('Explained Variance Ratio')
     ax.set_title('PCA Explained Variance')
-    ax.set_xticks(range(1, n_components + 1))
+    tick_step = max(1, n_components // 12)
+    ax.set_xticks(range(1, n_components + 1, tick_step))
+    ax.tick_params(axis='x', labelrotation=45)
     ax.legend()
 
     plt.tight_layout()
@@ -1513,12 +1612,24 @@ def prepare_interpolation_inputs(geochem_gdf, value_col, grid_resolution=60, pad
     interp_extent = (xmin - pad_x, xmax + pad_x, ymin - pad_y, ymax + pad_y)
 
     xmin, xmax, ymin, ymax = interp_extent
-    x_grid = np.linspace(xmin, xmax, grid_resolution)
-    y_grid = np.linspace(ymin, ymax, grid_resolution)
+    width = xmax - xmin
+    height = ymax - ymin
+    if width <= 0 or height <= 0:
+        raise ValueError('Invalid interpolation extent.')
+
+    if width >= height:
+        nx = grid_resolution
+        ny = max(10, int(round(grid_resolution * height / width)))
+    else:
+        ny = grid_resolution
+        nx = max(10, int(round(grid_resolution * width / height)))
+
+    x_grid = np.linspace(xmin, xmax, nx)
+    y_grid = np.linspace(ymin, ymax, ny)
     xx, yy = np.meshgrid(x_grid, y_grid)
     grid_points = np.column_stack([xx.ravel(), yy.ravel()])
 
-    return sample_coords, sample_values, grid_points, (grid_resolution, grid_resolution), interp_extent
+    return sample_coords, sample_values, grid_points, (ny, nx), interp_extent
 
 
 def show_plot():
@@ -1762,6 +1873,24 @@ def fit_isolation_forest_model(X_anom, contamination=0.05, n_estimators=200, ran
     labels = iso.fit_predict(X_anom)
     scores = -iso.decision_function(X_anom)
     return labels, scores
+
+
+def plot_anomaly_score_distribution(scores, contamination=0.05, figsize=(7, 5)):
+    """Plot anomaly score distribution with a percentile cutoff."""
+    scores = np.array(scores, dtype=float)
+    cutoff = np.nanpercentile(scores, 100 * (1 - contamination))
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.hist(scores, bins=30, color='slategray', edgecolor='white', alpha=0.8)
+    ax.axvline(cutoff, color='tomato', linestyle='--', linewidth=2,
+               label=f'Anomaly cutoff ({contamination:.0%})')
+    ax.set_title('Isolation Forest Score Distribution')
+    ax.set_xlabel('Anomaly score')
+    ax.set_ylabel('Count')
+    ax.legend()
+
+    plt.tight_layout()
+    return fig, ax
 
 
 def default_alteration_weights():
@@ -2045,23 +2174,11 @@ def display_data_cube_viewer(ml_dir='data/ML', cube_name='DCG.nc'):
     display(widgets.VBox([var_dropdown, layer_slider]))
 
 
-def display_workflow_outputs(ml_dir='data/ML'):
-    """Visualize ML workflow outputs (stacked rasters, SHAP, ROC curves)."""
+def get_ml_artifacts(ml_dir):
+    """Collect ML output artifact paths."""
     from pathlib import Path
 
     ml_dir = require_path(ml_dir, 'ml_dir', allow_dir=True)
-
-    def load_display(path, title):
-        if path.suffix.lower() == '.png':
-            img = plt.imread(path)
-            plt.figure(figsize=(6, 5))
-            plt.imshow(img)
-            plt.title(title)
-            plt.axis('off')
-            plt.show()
-            return None, None
-        data, extent, _ = load_raster(path)
-        return data, extent
 
     model_outputs = [require_one([Path(ml_dir) / f'output{i}.tif'], f'output{i}.tif') for i in range(1, 7)]
     stacked_raw_path = require_one([Path(ml_dir) / 'stacked_raw.tif'], 'stacked_raw.tif')
@@ -2074,23 +2191,58 @@ def display_workflow_outputs(ml_dir='data/ML'):
     stacked_roc_path = require_one([Path(ml_dir) / 'stacked_ROC.png', Path(ml_dir) / 'stacked_ROC.tif'],
                                    'stacked_ROC')
 
-    print('Loaded workflow artifacts from:', ml_dir)
+    return {
+        'ml_dir': ml_dir,
+        'model_outputs': model_outputs,
+        'stacked_raw_path': stacked_raw_path,
+        'stacked_result_path': stacked_result_path,
+        'shap_path': shap_path,
+        'roc_paths': roc_paths,
+        'stacked_roc_path': stacked_roc_path,
+    }
+
+
+def load_display(path, title):
+    """Load and display either a PNG or a raster."""
+    if path.suffix.lower() == '.png':
+        img = plt.imread(path)
+        plt.figure(figsize=(6, 5))
+        plt.imshow(img)
+        plt.title(title)
+        plt.axis('off')
+        plt.show()
+        return None, None
+    data, extent, _ = load_raster(path)
+    return data, extent
+
+
+def display_model_outputs(ml_dir='data/ML'):
+    """Visualize ML model outputs and stacked results."""
+    artifacts = get_ml_artifacts(ml_dir)
+    print('Loaded workflow artifacts from:', artifacts['ml_dir'])
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
     axes = axes.ravel()
-    for ax, path in zip(axes, model_outputs):
+    for ax, path in zip(axes, artifacts['model_outputs']):
         data, extent, _ = load_raster(path)
         plot_raster(data, ax=ax, title=path.stem, extent=extent, robust_stretch=True)
     plt.tight_layout()
     plt.show()
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    for ax, path in zip(axes, [stacked_raw_path, stacked_result_path]):
+    for ax, path in zip(axes, [artifacts['stacked_raw_path'], artifacts['stacked_result_path']]):
         data, extent, _ = load_raster(path)
         plot_raster(data, ax=ax, title=path.stem, extent=extent, robust_stretch=True)
     plt.tight_layout()
     plt.show()
 
+
+def display_interpretability_outputs(ml_dir='data/ML'):
+    """Visualize interpretability outputs (SHAP and ROC curves)."""
+    artifacts = get_ml_artifacts(ml_dir)
+    print('Loaded interpretability artifacts from:', artifacts['ml_dir'])
+
+    shap_path = artifacts['shap_path']
     if shap_path.suffix.lower() == '.png':
         load_display(shap_path, 'SHAP (Beeswarm)')
     else:
@@ -2098,6 +2250,7 @@ def display_workflow_outputs(ml_dir='data/ML'):
         plot_raster(shap_data, ax=None, title='SHAP (Beeswarm)', extent=shap_extent, robust_stretch=True)
         plt.show()
 
+    roc_paths = artifacts['roc_paths']
     roc_pngs = [p for p in roc_paths if p.suffix.lower() == '.png']
     roc_tifs = [p for p in roc_paths if p.suffix.lower() != '.png']
 
@@ -2121,6 +2274,7 @@ def display_workflow_outputs(ml_dir='data/ML'):
     plt.tight_layout()
     plt.show()
 
+    stacked_roc_path = artifacts['stacked_roc_path']
     if stacked_roc_path.suffix.lower() == '.png':
         load_display(stacked_roc_path, 'stacked_ROC')
     else:
@@ -2128,6 +2282,12 @@ def display_workflow_outputs(ml_dir='data/ML'):
         plot_raster(stacked_roc_data, ax=None, title='stacked_ROC', extent=stacked_roc_extent,
                     robust_stretch=True)
         plt.show()
+
+
+def display_workflow_outputs(ml_dir='data/ML'):
+    """Visualize ML workflow outputs (model + interpretability)."""
+    display_model_outputs(ml_dir)
+    display_interpretability_outputs(ml_dir)
 
 
 
@@ -2371,6 +2531,14 @@ def map_spectral_indices(spectral_indices):
     mapped = {}
     for canon, arrays in grouped.items():
         stacked = np.stack(arrays, axis=0)
-        mapped[canon] = np.nanmean(stacked, axis=0)
+        finite_mask = np.isfinite(stacked)
+        counts = finite_mask.sum(axis=0)
+        summed = np.nansum(stacked, axis=0)
+        mapped[canon] = np.divide(
+            summed,
+            counts,
+            out=np.zeros_like(summed, dtype=float),
+            where=counts > 0
+        )
 
     return mapped
