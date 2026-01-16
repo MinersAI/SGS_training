@@ -1348,6 +1348,643 @@ def rasterize_lithology(gdf, shape, extent, value_col=None):
 
 
 # =============================================================================
+# Notebook workflow helpers
+# =============================================================================
+
+def require_path(path, name, allow_dir=False):
+    """Validate that a required path exists."""
+    from pathlib import Path
+
+    if not path:
+        raise ValueError(f"Missing required path for {name}.")
+    p = Path(path)
+    if allow_dir:
+        if not p.exists() or not p.is_dir():
+            raise ValueError(f"{name} must be an existing directory: {path}")
+    else:
+        if not p.exists():
+            raise ValueError(f"{name} must be an existing file: {path}")
+    return p
+
+
+def require_one(path_candidates, label):
+    """Return the first existing path from a list of candidates."""
+    from pathlib import Path
+
+    candidates = []
+    for p in path_candidates:
+        path = Path(p)
+        candidates.append(path)
+        if path.exists():
+            return path
+    raise ValueError(f"Missing required output for {label}: {', '.join(str(p) for p in candidates)}")
+
+
+def load_training_data(data_config):
+    """Load raster/vector inputs defined in DATA_CONFIG."""
+    continuous_path = require_path(data_config.get('continuous_raster_path'), 'continuous_raster_path')
+    continuous_raster, raster_extent, raster_crs = load_raster(continuous_path)
+
+    vector_path = require_path(data_config.get('vector_path'), 'vector_path')
+    vector_gdf = load_vector(vector_path)
+
+    if data_config.get('categorical_raster_path'):
+        categorical_path = require_path(data_config.get('categorical_raster_path'), 'categorical_raster_path')
+        categorical_raster, _, _ = load_raster(categorical_path)
+    else:
+        categorical_raster = rasterize_lithology(vector_gdf, continuous_raster.shape, raster_extent)
+
+    geochem_path = require_path(data_config.get('geochem_points_path'), 'geochem_points_path')
+    geochem_gdf = ensure_xy(load_vector(geochem_path))
+
+    print('Raster shape:', continuous_raster.shape)
+    print('Vector records:', len(vector_gdf))
+    print('Geochem records:', len(geochem_gdf))
+
+    return {
+        'continuous_raster': continuous_raster,
+        'raster_extent': raster_extent,
+        'raster_crs': raster_crs,
+        'vector_gdf': vector_gdf,
+        'categorical_raster': categorical_raster,
+        'geochem_gdf': geochem_gdf,
+    }
+
+
+def prepare_geochem_features(geochem_gdf, exclude_cols=None, value_hint='cu'):
+    """Select numeric feature columns and a default value column."""
+    numeric_cols = geochem_gdf.select_dtypes(include=[np.number]).columns.tolist()
+    base_exclude = {'X', 'Y', 'id', 'coord_x', 'coord_y', 'elevation_m'}
+    if exclude_cols:
+        base_exclude.update(exclude_cols)
+    feature_cols = [c for c in numeric_cols if c not in base_exclude]
+    if not feature_cols:
+        raise ValueError('No numeric feature columns found in geochem data.')
+
+    value_candidates = [c for c in numeric_cols if value_hint in c.lower()]
+    value_col = value_candidates[0] if value_candidates else feature_cols[0]
+    return feature_cols, value_col
+
+
+def prepare_interpolation_inputs(geochem_gdf, value_col, grid_resolution=60, padding=0.05):
+    """Build interpolation grid and inputs from point data."""
+    sample_coords = geochem_gdf[['X', 'Y']].values
+    sample_values = geochem_gdf[value_col].values
+
+    xmin, xmax = sample_coords[:, 0].min(), sample_coords[:, 0].max()
+    ymin, ymax = sample_coords[:, 1].min(), sample_coords[:, 1].max()
+
+    pad_x = (xmax - xmin) * padding
+    pad_y = (ymax - ymin) * padding
+    interp_extent = (xmin - pad_x, xmax + pad_x, ymin - pad_y, ymax + pad_y)
+
+    xmin, xmax, ymin, ymax = interp_extent
+    x_grid = np.linspace(xmin, xmax, grid_resolution)
+    y_grid = np.linspace(ymin, ymax, grid_resolution)
+    xx, yy = np.meshgrid(x_grid, y_grid)
+    grid_points = np.column_stack([xx.ravel(), yy.ravel()])
+
+    return sample_coords, sample_values, grid_points, (grid_resolution, grid_resolution), interp_extent
+
+
+def run_interpolation_workflow(geochem_gdf, value_col, grid_resolution=60, padding=0.05,
+                               power=2, n_neighbors=12, show=True):
+    """Run IDW and Kriging interpolation demos with plots."""
+    sample_coords, sample_values, grid_points, grid_shape, interp_extent = prepare_interpolation_inputs(
+        geochem_gdf, value_col, grid_resolution=grid_resolution, padding=padding
+    )
+
+    idw_pred = idw_interpolation(sample_coords, sample_values, grid_points,
+                                 power=power, n_neighbors=n_neighbors)
+    idw_grid = idw_pred.reshape(grid_shape)
+    plot_interpolation_results(sample_coords, sample_values, idw_grid,
+                               interp_extent, method_name='IDW')
+    if show:
+        plt.show()
+
+    lags, semivar = compute_semivariogram(sample_coords, sample_values)
+    nugget, sill, range_param = fit_variogram(lags, semivar)
+
+    kriging_pred, kriging_var = ordinary_kriging(
+        sample_coords, sample_values, grid_points, nugget, sill, range_param, n_neighbors=n_neighbors
+    )
+    kriging_grid = kriging_pred.reshape(grid_shape)
+    plot_interpolation_results(sample_coords, sample_values, kriging_grid,
+                               interp_extent, method_name='Ordinary Kriging')
+    if show:
+        plt.show()
+
+    return {
+        'idw_grid': idw_grid,
+        'kriging_grid': kriging_grid,
+        'kriging_variance': kriging_var.reshape(grid_shape),
+        'interp_extent': interp_extent,
+    }
+
+
+def plot_spatial_pca_components(geochem_gdf, X_pca, pca, n_components=3,
+                                cmap=DIVERGING_CMAP, figsize=(16, 5)):
+    """Plot the first few PCA components in map view."""
+    fig, axes = plt.subplots(1, n_components, figsize=figsize)
+    axes = np.atleast_1d(axes)
+
+    for i, ax in enumerate(axes):
+        if i >= X_pca.shape[1]:
+            ax.axis('off')
+            continue
+        gdf_temp = geochem_gdf.copy()
+        gdf_temp[f'PC{i+1}'] = X_pca[:, i]
+        gdf_temp.plot(column=f'PC{i+1}', ax=ax, legend=True,
+                      cmap=cmap, markersize=30)
+        ax.set_title(f'PC{i+1} ({pca.explained_variance_ratio_[i]*100:.1f}% variance)')
+
+    plt.tight_layout()
+    return fig, axes
+
+
+def run_pca_workflow(geochem_gdf, feature_cols, exclude_cols=None, show=True):
+    """Run PCA with standard preprocessing and plots."""
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.decomposition import PCA
+
+    pca_exclude = {'id', 'elevation_m'}
+    if exclude_cols:
+        pca_exclude.update(exclude_cols)
+    pca_cols = [c for c in feature_cols if c not in pca_exclude]
+
+    X_geochem = geochem_gdf[pca_cols].values
+    X_log = np.log(X_geochem + 1)
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_log)
+
+    pca = PCA()
+    X_pca = pca.fit_transform(X_scaled)
+
+    print(f"Original dimensions: {X_geochem.shape[1]}")
+    plot_pca_results(pca, pca_cols, figsize=(14, 5))
+    if show:
+        plt.show()
+
+    plot_spatial_pca_components(geochem_gdf, X_pca, pca)
+    if show:
+        plt.show()
+
+    return {
+        'pca': pca,
+        'X_scaled': X_scaled,
+        'X_pca': X_pca,
+        'pca_cols': pca_cols,
+    }
+
+
+def run_kmeans_clustering(X_scaled, n_clusters=4, random_state=42):
+    """Fit K-means and return cluster labels."""
+    from sklearn.cluster import KMeans
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
+    return kmeans.fit_predict(X_scaled)
+
+
+def choose_lithology_column(vector_gdf, candidates=None):
+    """Pick a representative lithology column if available."""
+    if candidates is None:
+        candidates = ['gross_lithology', 'geology_name', 'geological_period', 'tectonic_setting']
+    for col in candidates:
+        if col in vector_gdf.columns:
+            return col
+    return None
+
+
+def plot_clusters_on_lithology(vector_gdf, geochem_gdf, cluster_labels,
+                               lith_column=None, figsize=(10, 8)):
+    """Overlay clustered points on lithology polygons."""
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if lith_column is None:
+        lith_column = choose_lithology_column(vector_gdf)
+
+    if lith_column:
+        plot_vector(
+            vector_gdf,
+            column=lith_column,
+            categorical=True,
+            categorical_cmap='tab20',
+            ax=ax,
+            title='Clusters on Lithology',
+            alpha=0.35,
+            edgecolor='black',
+            linewidth=0.3,
+        )
+    else:
+        vector_gdf.plot(ax=ax, facecolor='none', edgecolor='black', linewidth=0.4)
+        ax.set_title('Clusters on Lithology')
+
+    gdf_clustered = geochem_gdf.copy()
+    gdf_clustered['cluster'] = cluster_labels
+    gdf_clustered.plot(
+        column='cluster',
+        ax=ax,
+        legend=True,
+        categorical=True,
+        cmap='Set1',
+        markersize=45,
+        edgecolor='white',
+        linewidth=1.0,
+    )
+
+    ax.set_facecolor('#f7f7f7')
+    plt.tight_layout()
+    return fig, ax
+
+
+def run_kmeans_overlay(vector_gdf, geochem_gdf, X_scaled, n_clusters=4,
+                       lith_column=None, show=True):
+    """Cluster geochemistry and plot on lithology."""
+    cluster_labels = run_kmeans_clustering(X_scaled, n_clusters=n_clusters)
+    plot_clusters_on_lithology(vector_gdf, geochem_gdf, cluster_labels,
+                               lith_column=lith_column)
+    if show:
+        plt.show()
+    return cluster_labels
+
+
+def run_isolation_forest(geochem_gdf, feature_cols, exclude_cols=None,
+                         contamination=0.05, n_estimators=200, random_state=42,
+                         show=True):
+    """Run Isolation Forest anomaly detection with a plot."""
+    from sklearn.ensemble import IsolationForest
+
+    anom_exclude = {'id', 'coord_x', 'coord_y', 'elevation_m'}
+    if exclude_cols:
+        anom_exclude.update(exclude_cols)
+    anom_cols = [c for c in feature_cols if c not in anom_exclude]
+
+    X_anom = geochem_gdf[anom_cols].values
+    iso = IsolationForest(n_estimators=n_estimators, contamination=contamination,
+                          random_state=random_state)
+    labels = iso.fit_predict(X_anom)
+    scores = -iso.decision_function(X_anom)
+
+    plot_anomaly_scores(geochem_gdf, scores, binary_labels=labels, title='Isolation Forest')
+    if show:
+        plt.show()
+
+    return labels, scores
+
+
+def load_spectral_indices_dir(spectral_dir):
+    """Load spectral indices GeoTIFFs from a directory."""
+    from pathlib import Path
+
+    spectral_dir = require_path(spectral_dir, 'spectral_indices_dir', allow_dir=True)
+    spectral_indices = {}
+    spectral_extent = None
+    for tif_path in sorted(Path(spectral_dir).glob('*.tif')):
+        data, extent, _ = load_raster(tif_path)
+        data = np.array(data, dtype=float)
+        data[~np.isfinite(data)] = np.nan
+        spectral_indices[tif_path.stem] = data
+        if spectral_extent is None:
+            spectral_extent = extent
+
+    if not spectral_indices:
+        raise ValueError(f"No GeoTIFFs found in {spectral_dir}")
+
+    return spectral_indices, spectral_extent
+
+
+def plot_spectral_indices_grid(spectral_indices, cols=3, figsize_per=(5, 4)):
+    """Plot a grid of spectral indices."""
+    n_indices = len(spectral_indices)
+    rows = int(np.ceil(n_indices / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(figsize_per[0] * cols, figsize_per[1] * rows))
+    axes = np.atleast_1d(axes).ravel()
+
+    for ax, (name, data) in zip(axes, spectral_indices.items()):
+        plot_raster(data, ax=ax, title=name, cmap='viridis', robust_stretch=True)
+
+    for ax in axes[len(spectral_indices):]:
+        ax.axis('off')
+
+    plt.tight_layout()
+    return fig, axes
+
+
+def run_halo_detection_workflow(spectral_indices, presence_quantile=0.9,
+                                sigma_px=50, clip_q=(0.01, 0.99),
+                                valid_mask=None):
+    """Compute KDE surfaces and halo masks for each spectral index."""
+    kde_surfaces = {}
+    halo_masks = {}
+    for name, data in spectral_indices.items():
+        kde, mask = compute_halo_detection(
+            data,
+            presence_quantile=presence_quantile,
+            sigma_px=sigma_px,
+            clip_q=clip_q,
+            valid_mask=valid_mask,
+        )
+        kde_surfaces[name] = kde
+        halo_masks[name] = mask
+
+    return kde_surfaces, halo_masks
+
+
+def plot_halo_detection_results(kde_surfaces, halo_masks, cols=3, figsize_per=(5, 5)):
+    """Plot KDE surfaces with halo contours."""
+    n_items = len(kde_surfaces)
+    rows = int(np.ceil(n_items / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(figsize_per[0] * cols, figsize_per[1] * rows))
+    axes = np.atleast_1d(axes).ravel()
+
+    for ax, (name, kde) in zip(axes, kde_surfaces.items()):
+        ax.imshow(kde, cmap='viridis', origin='upper')
+        ax.contour(halo_masks[name], levels=[0.5], colors='red', linewidths=2)
+        ax.set_title(f'{name} - High Density Halo')
+        ax.axis('off')
+
+    for ax in axes[len(kde_surfaces):]:
+        ax.axis('off')
+
+    plt.tight_layout()
+    return fig, axes
+
+
+def classify_alteration_types(kde_surfaces, alteration_weights, valid_mask=None,
+                              confidence_percentile=20):
+    """Classify alteration types using weighted KDE surfaces."""
+    raster_shape = next(iter(kde_surfaces.values())).shape
+    kde_normalized = {name: normalize_kde(kde) for name, kde in kde_surfaces.items()}
+
+    alteration_scores = {}
+    valid_classes = []
+    for alt_type, weights in alteration_weights.items():
+        score = np.zeros(raster_shape)
+        used = 0
+        for index_name, weight in weights.items():
+            if index_name in kde_normalized:
+                score += weight * kde_normalized[index_name]
+                used += 1
+        if used > 0:
+            alteration_scores[alt_type] = normalize_kde(score)
+            valid_classes.append(alt_type)
+
+    if not valid_classes:
+        raise ValueError('No matching spectral indices found for alteration weights.')
+
+    all_scores = np.stack([alteration_scores[k] for k in valid_classes], axis=-1)
+    class_map = np.argmax(all_scores, axis=-1) + 1
+
+    max_scores = np.max(all_scores, axis=-1)
+    finite_mask = np.isfinite(max_scores)
+    if np.any(finite_mask):
+        confidence_threshold = np.nanpercentile(max_scores[finite_mask], confidence_percentile)
+    else:
+        confidence_threshold = 0
+
+    class_map[max_scores < confidence_threshold] = 0
+    if valid_mask is not None:
+        class_map[~valid_mask] = 0
+
+    class_names = ['Background'] + valid_classes
+    return class_map, class_names, alteration_scores
+
+
+def run_spectral_halo_workflow(spectral_dir, alteration_weights=None,
+                               presence_quantile=0.9, sigma_px=50,
+                               clip_q=(0.01, 0.99), confidence_percentile=20,
+                               show=True):
+    """Load spectral indices, detect halos, and classify alteration types."""
+    spectral_indices, _ = load_spectral_indices_dir(spectral_dir)
+    spectral_indices = map_spectral_indices(spectral_indices)
+    if not spectral_indices:
+        raise ValueError('No spectral indices matched canonical names.')
+
+    first_index = next(iter(spectral_indices.values()))
+    valid_mask = np.isfinite(first_index)
+    print(f"Loaded {len(spectral_indices)} spectral indices")
+
+    plot_spectral_indices_grid(spectral_indices)
+    if show:
+        plt.show()
+
+    kde_surfaces, halo_masks = run_halo_detection_workflow(
+        spectral_indices,
+        presence_quantile=presence_quantile,
+        sigma_px=sigma_px,
+        clip_q=clip_q,
+        valid_mask=valid_mask,
+    )
+    plot_halo_detection_results(kde_surfaces, halo_masks)
+    if show:
+        plt.show()
+
+    if alteration_weights is None:
+        alteration_weights = {
+            'Advanced Argillic': {'Clay_AlOH': 0.4, 'Silica': 0.25, 'Iron_Oxide': 0.15, 'Alt_Composite': 0.2},
+            'Phyllic': {'Clay_AlOH': 0.4, 'Iron_Oxide': 0.25, 'Silica': 0.15, 'Alt_Composite': 0.2},
+            'Argillic': {'Clay_AlOH': 0.4, 'Silica': 0.2, 'Laterite': 0.2, 'Alt_Composite': 0.2},
+            'Propylitic': {'Ferrous_Iron': 0.4, 'Clay_AlOH': 0.2, 'Laterite': 0.2, 'Silica': 0.2},
+            'Gossan': {'Iron_Oxide': 0.35, 'Gossan': 0.35, 'Silica': 0.15, 'Alt_Composite': 0.15},
+            'Laterite': {'Laterite': 0.6, 'Iron_Oxide': 0.2, 'Clay_AlOH': 0.2},
+        }
+
+    class_map, class_names, alteration_scores = classify_alteration_types(
+        kde_surfaces,
+        alteration_weights,
+        valid_mask=valid_mask,
+        confidence_percentile=confidence_percentile,
+    )
+
+    print('Alteration type classes:')
+    print('0: Background')
+    for i, name in enumerate(class_names[1:], 1):
+        count = (class_map == i).sum()
+        print(f"{i}: {name} ({count} pixels, {count / class_map.size * 100:.1f}%)")
+
+    plot_alteration_map(class_map, class_names=class_names, figsize=(12, 10))
+    if show:
+        plt.show()
+
+    print("""
+SPECTRAL HALO CLASSIFICATION:
+-----------------------------
+This unsupervised approach identifies alteration types based on:
+1. Spectral index values (proxy for mineralogy)
+2. Spatial density patterns (KDE)
+3. Weighted combinations based on expected assemblages
+
+Validation should include:
+- Field verification of predicted alteration types
+- Comparison with known mineralization
+- Cross-validation with other datasets (geochemistry, geophysics)
+""")
+
+    return {
+        'spectral_indices': spectral_indices,
+        'kde_surfaces': kde_surfaces,
+        'halo_masks': halo_masks,
+        'alteration_scores': alteration_scores,
+        'class_map': class_map,
+        'class_names': class_names,
+    }
+
+
+def display_data_cube_viewer(ml_dir='data/ML', cube_name='DCG.nc'):
+    """Interactive data cube viewer for ML workflow outputs."""
+    from pathlib import Path
+    import xarray as xr
+    import ipywidgets as widgets
+    from IPython.display import display
+
+    ml_dir = require_path(ml_dir, 'ml_dir', allow_dir=True)
+    cube_path = require_one([Path(ml_dir) / cube_name], cube_name)
+
+    print('Loaded data cube from:', cube_path)
+    cube = xr.open_dataset(cube_path)
+    if not cube.data_vars:
+        raise ValueError(f"No data variables found in {cube_path}")
+
+    var_names = list(cube.data_vars)
+    var_dropdown = widgets.Dropdown(options=var_names, description='Variable')
+    layer_slider = widgets.IntSlider(min=0, max=0, step=1, value=0, description='Layer')
+
+    viewer_fig, viewer_ax = plt.subplots(figsize=(6, 5))
+    viewer_display = display(viewer_fig, display_id=True)
+    plt.close(viewer_fig)
+
+    def update_slider(*args):
+        array = cube[var_dropdown.value]
+        if array.ndim <= 2:
+            layer_slider.max = 0
+            layer_slider.value = 0
+            layer_slider.disabled = True
+        else:
+            layer_dim = int(np.prod(array.shape[:-2]))
+            layer_slider.max = max(layer_dim - 1, 0)
+            layer_slider.value = 0
+            layer_slider.disabled = False
+
+    def render(*args, ax=viewer_ax, fig=viewer_fig):
+        array = cube[var_dropdown.value]
+        ax.clear()
+
+        if array.ndim == 1:
+            ax.plot(array.values)
+            ax.set_title(var_dropdown.value)
+            ax.grid(True, alpha=0.3)
+        elif array.ndim == 2:
+            ax.imshow(array.values, cmap='viridis')
+            ax.set_title(var_dropdown.value)
+            ax.axis('off')
+        else:
+            stacked = array.stack(layer=array.dims[:-2])
+            data = stacked.isel(layer=layer_slider.value).values
+            ax.imshow(data, cmap='viridis')
+            ax.set_title(f"{var_dropdown.value} [layer {layer_slider.value + 1}]")
+            ax.axis('off')
+
+        fig.canvas.draw_idle()
+        viewer_display.update(fig)
+
+    update_slider()
+    render()
+
+    var_dropdown.observe(update_slider, names='value')
+    var_dropdown.observe(render, names='value')
+    layer_slider.observe(render, names='value')
+
+    display(widgets.VBox([var_dropdown, layer_slider]))
+
+
+def display_workflow_outputs(ml_dir='data/ML'):
+    """Visualize ML workflow outputs (stacked rasters, SHAP, ROC curves)."""
+    from pathlib import Path
+
+    ml_dir = require_path(ml_dir, 'ml_dir', allow_dir=True)
+
+    def load_display(path, title):
+        if path.suffix.lower() == '.png':
+            img = plt.imread(path)
+            plt.figure(figsize=(6, 5))
+            plt.imshow(img)
+            plt.title(title)
+            plt.axis('off')
+            plt.show()
+            return None, None
+        data, extent, _ = load_raster(path)
+        return data, extent
+
+    model_outputs = [require_one([Path(ml_dir) / f'output{i}.tif'], f'output{i}.tif') for i in range(1, 7)]
+    stacked_raw_path = require_one([Path(ml_dir) / 'stacked_raw.tif'], 'stacked_raw.tif')
+    stacked_result_path = require_one([Path(ml_dir) / 'stacked_result.tif'], 'stacked_result.tif')
+    shap_path = require_one([Path(ml_dir) / 'SHAP.png', Path(ml_dir) / 'SHAP.tif'], 'SHAP')
+    roc_paths = [
+        require_one([Path(ml_dir) / f'ROC{i}.png', Path(ml_dir) / f'ROC{i}.tif'], f'ROC{i}')
+        for i in range(1, 7)
+    ]
+    stacked_roc_path = require_one([Path(ml_dir) / 'stacked_ROC.png', Path(ml_dir) / 'stacked_ROC.tif'],
+                                   'stacked_ROC')
+
+    print('Loaded workflow artifacts from:', ml_dir)
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+    axes = axes.ravel()
+    for ax, path in zip(axes, model_outputs):
+        data, extent, _ = load_raster(path)
+        plot_raster(data, ax=ax, title=path.stem, extent=extent, robust_stretch=True)
+    plt.tight_layout()
+    plt.show()
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    for ax, path in zip(axes, [stacked_raw_path, stacked_result_path]):
+        data, extent, _ = load_raster(path)
+        plot_raster(data, ax=ax, title=path.stem, extent=extent, robust_stretch=True)
+    plt.tight_layout()
+    plt.show()
+
+    if shap_path.suffix.lower() == '.png':
+        load_display(shap_path, 'SHAP (Beeswarm)')
+    else:
+        shap_data, shap_extent = load_display(shap_path, 'SHAP (Beeswarm)')
+        plot_raster(shap_data, ax=None, title='SHAP (Beeswarm)', extent=shap_extent, robust_stretch=True)
+        plt.show()
+
+    roc_pngs = [p for p in roc_paths if p.suffix.lower() == '.png']
+    roc_tifs = [p for p in roc_paths if p.suffix.lower() != '.png']
+
+    if roc_tifs:
+        print('Skipping non-PNG ROC files:', [p.name for p in roc_tifs])
+
+    if not roc_pngs:
+        raise ValueError('No ROC PNGs found; expected ROC1.png ... ROC6.png')
+
+    cols = 3
+    rows = int(np.ceil(len(roc_pngs) / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows))
+    axes = np.atleast_1d(axes).ravel()
+    for ax, path in zip(axes, roc_pngs):
+        img = plt.imread(path)
+        ax.imshow(img)
+        ax.set_title(path.stem)
+        ax.axis('off')
+    for ax in axes[len(roc_pngs):]:
+        ax.axis('off')
+    plt.tight_layout()
+    plt.show()
+
+    if stacked_roc_path.suffix.lower() == '.png':
+        load_display(stacked_roc_path, 'stacked_ROC')
+    else:
+        stacked_roc_data, stacked_roc_extent = load_display(stacked_roc_path, 'stacked_ROC')
+        plot_raster(stacked_roc_data, ax=None, title='stacked_ROC', extent=stacked_roc_extent,
+                    robust_stretch=True)
+        plt.show()
+
+
+
+# =============================================================================
 # Interpolation helpers
 # =============================================================================
 
