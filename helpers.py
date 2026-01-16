@@ -37,6 +37,116 @@ ALTERATION_COLORS = {
 
 
 # =============================================================================
+# Data summary functions
+# =============================================================================
+
+def summarize_geochem(gdf, feature_cols=None, max_cols=10):
+    """
+    Print a summary of geochem data structure and contents.
+
+    Parameters
+    ----------
+    gdf : geopandas.GeoDataFrame
+        Geochemical data
+    feature_cols : list
+        Feature columns to summarize (auto-detected if None)
+    max_cols : int
+        Maximum columns to show in detailed stats
+    """
+    print("=" * 60)
+    print("GEOCHEMICAL DATA SUMMARY")
+    print("=" * 60)
+
+    # Basic info
+    print(f"\nRecords: {len(gdf)}")
+    print(f"Total columns: {len(gdf.columns)}")
+
+    # Detect feature columns if not provided
+    if feature_cols is None:
+        exclude = ['geometry', 'X', 'Y', 'x', 'y', 'OBJECTID', 'FID', 'id']
+        feature_cols = [c for c in gdf.select_dtypes(include=[np.number]).columns
+                        if c not in exclude]
+
+    print(f"Numeric feature columns: {len(feature_cols)}")
+
+    # Coordinate info
+    if 'X' in gdf.columns and 'Y' in gdf.columns:
+        print(f"\nSpatial extent:")
+        print(f"  X: {gdf['X'].min():.2f} to {gdf['X'].max():.2f}")
+        print(f"  Y: {gdf['Y'].min():.2f} to {gdf['Y'].max():.2f}")
+
+    # Element groups
+    majors = [c for c in feature_cols if 'percent' in c.lower() or c.endswith('_pct')]
+    traces_ppm = [c for c in feature_cols if 'ppm' in c.lower()]
+    traces_ppb = [c for c in feature_cols if 'ppb' in c.lower()]
+
+    print(f"\nElement breakdown:")
+    print(f"  Major oxides (percent): {len(majors)}")
+    print(f"  Trace elements (ppm): {len(traces_ppm)}")
+    print(f"  Trace elements (ppb): {len(traces_ppb)}")
+
+    # Missing data
+    missing_counts = gdf[feature_cols].isnull().sum()
+    cols_with_missing = (missing_counts > 0).sum()
+    total_missing = missing_counts.sum()
+    total_cells = len(gdf) * len(feature_cols)
+
+    print(f"\nMissing data:")
+    print(f"  Columns with missing: {cols_with_missing} / {len(feature_cols)}")
+    print(f"  Total missing cells: {total_missing} / {total_cells} ({100*total_missing/total_cells:.1f}%)")
+
+    # Quick stats for subset of columns
+    print(f"\nSample statistics (first {min(max_cols, len(feature_cols))} columns):")
+    print("-" * 60)
+    stats_cols = feature_cols[:max_cols]
+    stats_df = gdf[stats_cols].describe().T[['mean', 'std', 'min', 'max']]
+    stats_df.columns = ['Mean', 'Std', 'Min', 'Max']
+    print(stats_df.to_string())
+    print("=" * 60)
+
+
+def summarize_imputation(original_df, imputed_array, feature_cols):
+    """
+    Print summary of imputation results.
+
+    Parameters
+    ----------
+    original_df : pd.DataFrame
+        DataFrame with missing values
+    imputed_array : np.ndarray
+        Array after imputation
+    feature_cols : list
+        Column names corresponding to imputed_array
+    """
+    print("=" * 60)
+    print("IMPUTATION SUMMARY")
+    print("=" * 60)
+
+    total_missing = original_df[feature_cols].isnull().sum().sum()
+    total_cells = len(original_df) * len(feature_cols)
+
+    print(f"\nTotal values imputed: {total_missing}")
+    print(f"Percentage of data imputed: {100*total_missing/total_cells:.2f}%")
+
+    # Per-column summary
+    print(f"\nPer-column breakdown:")
+    print("-" * 60)
+    print(f"{'Column':<25} {'N Missing':>10} {'% Missing':>10} {'Imputed Value':>15}")
+    print("-" * 60)
+
+    imputed_df = pd.DataFrame(imputed_array, columns=feature_cols)
+    for i, col in enumerate(feature_cols):
+        n_missing = original_df[col].isnull().sum()
+        if n_missing > 0:
+            pct_missing = 100 * n_missing / len(original_df)
+            # The imputed value (mean for mean imputation)
+            imputed_val = imputed_df[col].iloc[original_df[col].isnull().values].mean()
+            print(f"{col:<25} {n_missing:>10} {pct_missing:>9.1f}% {imputed_val:>15.2f}")
+
+    print("=" * 60)
+
+
+# =============================================================================
 # Data visualization functions
 # =============================================================================
 
@@ -1292,25 +1402,27 @@ def add_missing_data(df, missing_pct=0.1, columns=None, pattern='random',
     df_missing : pd.DataFrame
         DataFrame with missing values
     """
-    np.random.seed(random_state)
+    rng = np.random.default_rng(random_state)
     df_missing = df.copy()
 
     if columns is None:
         columns = df_missing.select_dtypes(include=[np.number]).columns.tolist()
 
+    missing_summary = {}
     for col in columns:
         if col in ['X', 'Y', 'geometry']:
             continue
 
         if isinstance(missing_pct, (tuple, list)) and len(missing_pct) == 2:
             low, high = missing_pct
-            pct = np.random.uniform(low, high)
+            pct = rng.uniform(low, high)
         else:
             pct = missing_pct
         n_missing = int(len(df_missing) * pct)
+        missing_summary[col] = {'pct': pct * 100, 'n': n_missing}
 
         if pattern == 'random':
-            missing_idx = np.random.choice(df_missing.index, n_missing, replace=False)
+            missing_idx = rng.choice(df_missing.index, n_missing, replace=False)
         else:  # spatial clustering of missing values
             # Cluster missing values in one corner
             if 'X' in df_missing.columns and 'Y' in df_missing.columns:
@@ -1318,14 +1430,16 @@ def add_missing_data(df, missing_pct=0.1, columns=None, pattern='random',
                               (df_missing['Y'] < df_missing['Y'].median())
                 corner_idx = df_missing[corner_mask].index
                 if len(corner_idx) >= n_missing:
-                    missing_idx = np.random.choice(corner_idx, n_missing, replace=False)
+                    missing_idx = rng.choice(corner_idx, n_missing, replace=False)
                 else:
-                    missing_idx = np.random.choice(df_missing.index, n_missing, replace=False)
+                    missing_idx = rng.choice(df_missing.index, n_missing, replace=False)
             else:
-                missing_idx = np.random.choice(df_missing.index, n_missing, replace=False)
+                missing_idx = rng.choice(df_missing.index, n_missing, replace=False)
 
         df_missing.loc[missing_idx, col] = np.nan
 
+    # Store summary as attribute for later access
+    df_missing.attrs['missing_summary'] = missing_summary
     return df_missing
 
 
@@ -1787,6 +1901,35 @@ def run_kmeans_diagnostics(X_scaled, k_range, random_state=42):
         inertias.append(kmeans.inertia_)
         silhouettes.append(silhouette_score(X_scaled, labels))
     return inertias, silhouettes
+
+
+def find_elbow_k(k_range, inertias):
+    """
+    Find optimal k using the elbow method (kneedle algorithm approximation).
+
+    Uses the point of maximum curvature in the inertia curve.
+    """
+    k_range = np.array(k_range)
+    inertias = np.array(inertias)
+
+    # Normalize to [0, 1] range
+    k_norm = (k_range - k_range.min()) / (k_range.max() - k_range.min())
+    inertia_norm = (inertias - inertias.min()) / (inertias.max() - inertias.min())
+
+    # Calculate distance from each point to the line connecting first and last points
+    p1 = np.array([k_norm[0], inertia_norm[0]])
+    p2 = np.array([k_norm[-1], inertia_norm[-1]])
+
+    distances = []
+    for i in range(len(k_range)):
+        p = np.array([k_norm[i], inertia_norm[i]])
+        # Distance from point to line
+        d = np.abs(np.cross(p2 - p1, p1 - p)) / np.linalg.norm(p2 - p1)
+        distances.append(d)
+
+    # The elbow is the point with maximum distance
+    elbow_idx = np.argmax(distances)
+    return k_range[elbow_idx]
 
 
 def plot_silhouette_scores(k_range, silhouettes, preferred_k=None, figsize=(7, 5)):
