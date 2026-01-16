@@ -1426,6 +1426,80 @@ def prepare_geochem_features(geochem_gdf, exclude_cols=None, value_hint='cu'):
     return feature_cols, value_col
 
 
+def prepare_pca_inputs(geochem_gdf, feature_cols, exclude_cols=None):
+    """Prepare scaled geochemistry inputs for PCA."""
+    from sklearn.preprocessing import StandardScaler
+
+    pca_exclude = {'id', 'elevation_m'}
+    if exclude_cols:
+        pca_exclude.update(exclude_cols)
+    pca_cols = [c for c in feature_cols if c not in pca_exclude]
+
+    X_geochem = geochem_gdf[pca_cols].values
+    X_log = np.log(X_geochem + 1)
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_log)
+
+    print(f"Original dimensions: {X_geochem.shape[1]}")
+
+    return {
+        'X_geochem': X_geochem,
+        'X_log': X_log,
+        'X_scaled': X_scaled,
+        'pca_cols': pca_cols,
+        'scaler': scaler,
+    }
+
+
+def fit_pca_model(X_scaled, n_components=None, random_state=42):
+    """Fit PCA and return the model and transformed data."""
+    from sklearn.decomposition import PCA
+
+    pca = PCA(n_components=n_components, random_state=random_state)
+    X_pca = pca.fit_transform(X_scaled)
+    return pca, X_pca
+
+
+def plot_pca_variance(pca, figsize=(7, 5)):
+    """Plot explained variance for PCA."""
+    fig, ax = plt.subplots(figsize=figsize)
+    n_components = len(pca.explained_variance_ratio_)
+    cum_var = np.cumsum(pca.explained_variance_ratio_)
+
+    ax.bar(range(1, n_components + 1), pca.explained_variance_ratio_,
+           alpha=0.7, label='Individual')
+    ax.plot(range(1, n_components + 1), cum_var, 'ro-', label='Cumulative')
+    ax.axhline(y=0.9, color='gray', linestyle='--', alpha=0.5)
+    ax.set_xlabel('Principal Component')
+    ax.set_ylabel('Explained Variance Ratio')
+    ax.set_title('PCA Explained Variance')
+    ax.set_xticks(range(1, n_components + 1))
+    ax.legend()
+
+    plt.tight_layout()
+    return fig, ax
+
+
+def plot_pca_loadings(pca, feature_names, n_components=3, annot=False, figsize=(7, 5)):
+    """Plot PCA loadings heatmap."""
+    import seaborn as sns
+
+    n_show = min(n_components, len(pca.components_))
+    loadings = pd.DataFrame(
+        pca.components_[:n_show].T,
+        columns=[f'PC{i+1}' for i in range(n_show)],
+        index=feature_names
+    )
+
+    fig, ax = plt.subplots(figsize=figsize)
+    sns.heatmap(loadings, cmap='RdBu_r', center=0, annot=annot, fmt='.2f', ax=ax)
+    ax.set_title('PCA Loadings')
+
+    plt.tight_layout()
+    return fig, ax
+
+
 def prepare_interpolation_inputs(geochem_gdf, value_col, grid_resolution=60, padding=0.05):
     """Build interpolation grid and inputs from point data."""
     sample_coords = geochem_gdf[['X', 'Y']].values
@@ -1445,6 +1519,42 @@ def prepare_interpolation_inputs(geochem_gdf, value_col, grid_resolution=60, pad
     grid_points = np.column_stack([xx.ravel(), yy.ravel()])
 
     return sample_coords, sample_values, grid_points, (grid_resolution, grid_resolution), interp_extent
+
+
+def show_plot():
+    """Render the current matplotlib figure."""
+    plt.show()
+
+
+def run_idw_interpolation(sample_coords, sample_values, grid_points, grid_shape,
+                          interp_extent, power=2, n_neighbors=12, show=True):
+    """Run IDW interpolation and plot the result."""
+    idw_pred = idw_interpolation(sample_coords, sample_values, grid_points,
+                                 power=power, n_neighbors=n_neighbors)
+    idw_grid = idw_pred.reshape(grid_shape)
+    plot_interpolation_results(sample_coords, sample_values, idw_grid,
+                               interp_extent, method_name='IDW')
+    if show:
+        plt.show()
+    return idw_grid
+
+
+def run_kriging_interpolation(sample_coords, sample_values, grid_points, grid_shape,
+                              interp_extent, n_neighbors=12, show=True):
+    """Fit a variogram and run ordinary kriging with a plot."""
+    lags, semivar = compute_semivariogram(sample_coords, sample_values)
+    nugget, sill, range_param = fit_variogram(lags, semivar)
+
+    kriging_pred, kriging_var = ordinary_kriging(
+        sample_coords, sample_values, grid_points, nugget, sill, range_param,
+        n_neighbors=n_neighbors
+    )
+    kriging_grid = kriging_pred.reshape(grid_shape)
+    plot_interpolation_results(sample_coords, sample_values, kriging_grid,
+                               interp_extent, method_name='Ordinary Kriging')
+    if show:
+        plt.show()
+    return kriging_grid, kriging_var.reshape(grid_shape)
 
 
 def run_interpolation_workflow(geochem_gdf, value_col, grid_resolution=60, padding=0.05,
@@ -1633,6 +1743,48 @@ def run_isolation_forest(geochem_gdf, feature_cols, exclude_cols=None,
     return labels, scores
 
 
+def prepare_anomaly_inputs(geochem_gdf, feature_cols, exclude_cols=None):
+    """Select numeric inputs for anomaly detection."""
+    anom_exclude = {'id', 'coord_x', 'coord_y', 'elevation_m'}
+    if exclude_cols:
+        anom_exclude.update(exclude_cols)
+    anom_cols = [c for c in feature_cols if c not in anom_exclude]
+    X_anom = geochem_gdf[anom_cols].values
+    return X_anom, anom_cols
+
+
+def fit_isolation_forest_model(X_anom, contamination=0.05, n_estimators=200, random_state=42):
+    """Fit Isolation Forest and return labels and anomaly scores."""
+    from sklearn.ensemble import IsolationForest
+
+    iso = IsolationForest(n_estimators=n_estimators, contamination=contamination,
+                          random_state=random_state)
+    labels = iso.fit_predict(X_anom)
+    scores = -iso.decision_function(X_anom)
+    return labels, scores
+
+
+def default_alteration_weights():
+    """Default alteration weights for spectral halo classification."""
+    return {
+        'Advanced Argillic': {'Clay_AlOH': 0.4, 'Silica': 0.25, 'Iron_Oxide': 0.15, 'Alt_Composite': 0.2},
+        'Phyllic': {'Clay_AlOH': 0.4, 'Iron_Oxide': 0.25, 'Silica': 0.15, 'Alt_Composite': 0.2},
+        'Argillic': {'Clay_AlOH': 0.4, 'Silica': 0.2, 'Laterite': 0.2, 'Alt_Composite': 0.2},
+        'Propylitic': {'Ferrous_Iron': 0.4, 'Clay_AlOH': 0.2, 'Laterite': 0.2, 'Silica': 0.2},
+        'Gossan': {'Iron_Oxide': 0.35, 'Gossan': 0.35, 'Silica': 0.15, 'Alt_Composite': 0.15},
+        'Laterite': {'Laterite': 0.6, 'Iron_Oxide': 0.2, 'Clay_AlOH': 0.2},
+    }
+
+
+def summarize_alteration_classes(class_map, class_names):
+    """Print class counts for alteration classification."""
+    print('Alteration type classes:')
+    print('0: Background')
+    for i, name in enumerate(class_names[1:], 1):
+        count = (class_map == i).sum()
+        print(f"{i}: {name} ({count} pixels, {count / class_map.size * 100:.1f}%)")
+
+
 def load_spectral_indices_dir(spectral_dir):
     """Load spectral indices GeoTIFFs from a directory."""
     from pathlib import Path
@@ -1652,6 +1804,12 @@ def load_spectral_indices_dir(spectral_dir):
         raise ValueError(f"No GeoTIFFs found in {spectral_dir}")
 
     return spectral_indices, spectral_extent
+
+
+def spectral_valid_mask(spectral_indices):
+    """Derive a finite-value mask from the first spectral index."""
+    first_index = next(iter(spectral_indices.values()))
+    return np.isfinite(first_index)
 
 
 def plot_spectral_indices_grid(spectral_indices, cols=3, figsize_per=(5, 4)):
@@ -1781,14 +1939,7 @@ def run_spectral_halo_workflow(spectral_dir, alteration_weights=None,
         plt.show()
 
     if alteration_weights is None:
-        alteration_weights = {
-            'Advanced Argillic': {'Clay_AlOH': 0.4, 'Silica': 0.25, 'Iron_Oxide': 0.15, 'Alt_Composite': 0.2},
-            'Phyllic': {'Clay_AlOH': 0.4, 'Iron_Oxide': 0.25, 'Silica': 0.15, 'Alt_Composite': 0.2},
-            'Argillic': {'Clay_AlOH': 0.4, 'Silica': 0.2, 'Laterite': 0.2, 'Alt_Composite': 0.2},
-            'Propylitic': {'Ferrous_Iron': 0.4, 'Clay_AlOH': 0.2, 'Laterite': 0.2, 'Silica': 0.2},
-            'Gossan': {'Iron_Oxide': 0.35, 'Gossan': 0.35, 'Silica': 0.15, 'Alt_Composite': 0.15},
-            'Laterite': {'Laterite': 0.6, 'Iron_Oxide': 0.2, 'Clay_AlOH': 0.2},
-        }
+        alteration_weights = default_alteration_weights()
 
     class_map, class_names, alteration_scores = classify_alteration_types(
         kde_surfaces,
@@ -1797,11 +1948,7 @@ def run_spectral_halo_workflow(spectral_dir, alteration_weights=None,
         confidence_percentile=confidence_percentile,
     )
 
-    print('Alteration type classes:')
-    print('0: Background')
-    for i, name in enumerate(class_names[1:], 1):
-        count = (class_map == i).sum()
-        print(f"{i}: {name} ({count} pixels, {count / class_map.size * 100:.1f}%)")
+    summarize_alteration_classes(class_map, class_names)
 
     plot_alteration_map(class_map, class_names=class_names, figsize=(12, 10))
     if show:
