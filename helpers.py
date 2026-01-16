@@ -2094,6 +2094,33 @@ def find_elbow_k(k_range, inertias):
     return k_range[elbow_idx]
 
 
+def choose_k(k_range, inertias, user_override=None):
+    """
+    Choose optimal k for K-means, with optional user override.
+
+    Parameters
+    ----------
+    k_range : list
+        Range of k values tested.
+    inertias : list
+        Inertia values for each k.
+    user_override : int or None
+        If provided, use this value instead of elbow method.
+
+    Returns
+    -------
+    int
+        Chosen k value.
+    """
+    elbow_k = find_elbow_k(k_range, inertias)
+    print(f'Elbow method suggests k={elbow_k}')
+
+    if user_override is not None:
+        print(f'Using user override: k={user_override}')
+        return user_override
+    return elbow_k
+
+
 def plot_silhouette_scores(k_range, silhouettes, preferred_k=None, figsize=(7, 5)):
     """Plot silhouette scores across k values."""
     fig, ax = plt.subplots(figsize=figsize)
