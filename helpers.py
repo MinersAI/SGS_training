@@ -1567,7 +1567,14 @@ def plot_pca_variance(pca, figsize=(7, 5)):
     ax.bar(range(1, n_components + 1), pca.explained_variance_ratio_,
            alpha=0.7, label='Individual')
     ax.plot(range(1, n_components + 1), cum_var, 'ro-', label='Cumulative')
-    ax.axhline(y=0.9, color='gray', linestyle='--', alpha=0.5)
+    thresholds = [0.5, 0.75, 0.9]
+    colors = ['#8e6c8a', '#5b8c5a', '#6c757d']
+    for thresh, color in zip(thresholds, colors):
+        idx = np.argmax(cum_var >= thresh) + 1
+        ax.axhline(y=thresh, color=color, linestyle='--', alpha=0.6)
+        ax.axvline(x=idx, color=color, linestyle=':', alpha=0.6)
+        ax.text(idx + 0.2, thresh + 0.02, f'{int(thresh*100)}% -> {idx} PCs',
+                color=color, fontsize=9)
     ax.set_xlabel('Principal Component')
     ax.set_ylabel('Explained Variance Ratio')
     ax.set_title('PCA Explained Variance')
@@ -1765,6 +1772,39 @@ def run_kmeans_clustering(X_scaled, n_clusters=4, random_state=42):
 
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
     return kmeans.fit_predict(X_scaled)
+
+
+def run_kmeans_diagnostics(X_scaled, k_range, random_state=42):
+    """Compute inertia and silhouette scores for a range of k."""
+    from sklearn.cluster import KMeans
+    from sklearn.metrics import silhouette_score
+
+    inertias = []
+    silhouettes = []
+    for k in k_range:
+        kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
+        labels = kmeans.fit_predict(X_scaled)
+        inertias.append(kmeans.inertia_)
+        silhouettes.append(silhouette_score(X_scaled, labels))
+    return inertias, silhouettes
+
+
+def plot_silhouette_scores(k_range, silhouettes, preferred_k=None, figsize=(7, 5)):
+    """Plot silhouette scores across k values."""
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(k_range, silhouettes, 'o-', color='teal')
+    ax.set_xlabel('Number of Clusters (k)')
+    ax.set_ylabel('Silhouette Score')
+    ax.set_title('Silhouette Scores by k')
+    ax.grid(True, alpha=0.3)
+
+    if preferred_k is not None:
+        ax.axvline(preferred_k, color='tomato', linestyle='--', alpha=0.7,
+                   label=f'Chosen k = {preferred_k}')
+        ax.legend()
+
+    plt.tight_layout()
+    return fig, ax
 
 
 def choose_lithology_column(vector_gdf, candidates=None):
