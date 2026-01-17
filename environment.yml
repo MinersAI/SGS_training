@@ -7,12 +7,13 @@ dependencies:
   - jupyterlab
   - numpy
   - pandas
-  - matplotlib
+  - matplotlib-base
   - seaborn
-  - geopandas
+  - geopandas-base
   - shapely
   - rasterio
   - scikit-learn
   - scipy
   - xarray
+  - h5netcdf
   - pyproj
