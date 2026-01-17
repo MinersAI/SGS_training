@@ -1648,9 +1648,11 @@ def load_training_data(data_config=None):
     geochem_path = require_path(data_config.get('geochem_points_path'), 'geochem_points_path')
     geochem_gdf = ensure_xy(load_vector(geochem_path))
 
+    print('\nTotal Files: 16 \n - Vector Files: 3 \n - Raster Files: 13\n')
     print('Raster shape:', continuous_raster.shape)
     print('Vector records:', len(vector_gdf))
     print('Geochem records:', len(geochem_gdf))
+    
 
     return {
         'continuous_raster': continuous_raster,
