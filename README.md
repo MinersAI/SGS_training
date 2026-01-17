@@ -22,3 +22,8 @@ Welcome to the MinersAI training space. This page is your launchpad for hands-on
 - If a cell is taking time, wait for the spinning icon to finish.
 - You can rerun any cell without breaking your work.
 
+## Open with NBViewer (non-interactive, no Gmail needed)
+
+[![Open in NBViewer - Foundational Concepts](https://img.shields.io/badge/NBViewer-Step_1:_Foundational_Concepts-4C9A2A?style=for-the-badge)](https://nbviewer.org/github/MinersAI/SGS_training/blob/HEAD/sgs_foundational_concepts_preprocessing.ipynb)
+
+[![Open in NBViewer - Analytical Methods](https://img.shields.io/badge/NBViewer-Step_2:_Analytical_Methods-4C9A2A?style=for-the-badge)](https://nbviewer.org/github/MinersAI/SGS_training/blob/HEAD/sgs_analytical_methods.ipynb)
