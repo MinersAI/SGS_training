@@ -2518,7 +2518,21 @@ def display_data_cube_viewer(ml_dir='data/ML', cube_name='DCG.nc'):
     cube_path = require_one([Path(ml_dir) / cube_name], cube_name)
 
     print('Loaded data cube from:', cube_path)
-    cube = xr.open_dataset(cube_path)
+
+    # Copy file locally if on S3 mount (required for HDF5/NetCDF random access)
+    import shutil
+    import tempfile
+    local_cube_path = cube_path
+    if '/mnt/' in str(cube_path) or '/s3/' in str(cube_path):
+        local_cube_path = Path(tempfile.gettempdir()) / Path(cube_path).name
+        if not local_cube_path.exists():
+            print(f'Copying to local storage: {local_cube_path}')
+            shutil.copy(cube_path, local_cube_path)
+
+    try:
+        cube = xr.open_dataset(local_cube_path, engine='h5netcdf')
+    except Exception:
+        cube = xr.open_dataset(local_cube_path, engine='netcdf4')
     if not cube.data_vars:
         raise ValueError(f"No data variables found in {cube_path}")
 

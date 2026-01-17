@@ -1,0 +1,18 @@
+name: sgs-training
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - jupyterlab
+  - numpy
+  - pandas
+  - matplotlib
+  - seaborn
+  - geopandas
+  - shapely
+  - rasterio
+  - scikit-learn
+  - scipy
+  - xarray
+  - pyproj
