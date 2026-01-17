@@ -1,6 +1,8 @@
-# SGS Training Notebooks
+# Data Science and Machine Learning for Mineral Exploration - Course Material
 
-Welcome to the SGS training space. This page is your launchpad for the hands-on notebooks used in the Saudi Geological Survey training. Click a badge to open the notebook in Google Colab (no setup required).
+![SGS Training Header](data/assets/image.png)
+
+Welcome to the MinersAI training space. This page is your launchpad for hands-on applications of data science and ML in geological exploration. Click a badge to open the notebook in Google Colab (no setup required).
 
 ## Launch in Colab
 
@@ -10,7 +12,7 @@ Welcome to the SGS training space. This page is your launchpad for the hands-on 
 
 ## What you will learn
 
-- Core data concepts and preprocessing used in SGS workflows
+- Core data concepts and preprocessing used in exploration workflows
 - Practical analytical methods with real examples
 - How to run and explore notebooks in Colab
 
@@ -19,3 +21,4 @@ Welcome to the SGS training space. This page is your launchpad for the hands-on 
 - Use the notebook in order from top to bottom.
 - If a cell is taking time, wait for the spinning icon to finish.
 - You can rerun any cell without breaking your work.
+
