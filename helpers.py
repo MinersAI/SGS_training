@@ -2538,6 +2538,8 @@ def display_data_cube_viewer(ml_dir='data/ML', cube_name='DCG.nc'):
 
     options = []
     for name, array in cube.data_vars.items():
+        if name == 'spatial_ref':
+            continue
         if array.ndim <= 2:
             options.append((name, (name, None)))
         else:
