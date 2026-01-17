@@ -10,3 +10,7 @@ Notes:
 Open notebooks (classic interface for faster startup):
 - Foundational concepts: https://mybinder.org/v2/gh/MinersAI/SGS_training/HEAD?urlpath=tree/sgs_foundational_concepts_preprocessing.ipynb
 - Analytical methods: https://mybinder.org/v2/gh/MinersAI/SGS_training/HEAD?urlpath=tree/sgs_analytical_methods.ipynb
+
+Open in Colab:
+- Foundational concepts: https://colab.research.google.com/github/MinersAI/SGS_training/blob/HEAD/sgs_foundational_concepts_preprocessing.ipynb
+- Analytical methods: https://colab.research.google.com/github/MinersAI/SGS_training/blob/HEAD/sgs_analytical_methods.ipynb
