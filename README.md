@@ -1,16 +1,5 @@
 # SGS Training Notebooks
 
-Launch in Binder:
-
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/MinersAI/SGS_training/HEAD)
-
-Notes:
-- Binder uses `environment.yml` to build the environment.
-
-Open notebooks (classic interface for faster startup):
-- Foundational concepts: https://mybinder.org/v2/gh/MinersAI/SGS_training/HEAD?urlpath=tree/sgs_foundational_concepts_preprocessing.ipynb
-- Analytical methods: https://mybinder.org/v2/gh/MinersAI/SGS_training/HEAD?urlpath=tree/sgs_analytical_methods.ipynb
-
-Open in Colab:
-- Foundational concepts: https://colab.research.google.com/github/MinersAI/SGS_training/blob/HEAD/sgs_foundational_concepts_preprocessing.ipynb
-- Analytical methods: https://colab.research.google.com/github/MinersAI/SGS_training/blob/HEAD/sgs_analytical_methods.ipynb
+Open in Colab (playground mode):
+- Foundational concepts: https://colab.research.google.com/github/MinersAI/SGS_training/blob/HEAD/sgs_foundational_concepts_preprocessing.ipynb?sandbox=1
+- Analytical methods: https://colab.research.google.com/github/MinersAI/SGS_training/blob/HEAD/sgs_analytical_methods.ipynb?sandbox=1
