@@ -7,6 +7,6 @@ Launch in Binder:
 Notes:
 - Binder uses `environment.yml` to build the environment.
 
-Open notebooks:
-- Foundational concepts: https://mybinder.org/v2/gh/MinersAI/SGS_training/HEAD?filepath=sgs_foundational_concepts_preprocessing.ipynb
-- Analytical methods: https://mybinder.org/v2/gh/MinersAI/SGS_training/HEAD?filepath=sgs_analytical_methods.ipynb
+Open notebooks (classic interface for faster startup):
+- Foundational concepts: https://mybinder.org/v2/gh/MinersAI/SGS_training/HEAD?urlpath=tree/sgs_foundational_concepts_preprocessing.ipynb
+- Analytical methods: https://mybinder.org/v2/gh/MinersAI/SGS_training/HEAD?urlpath=tree/sgs_analytical_methods.ipynb
