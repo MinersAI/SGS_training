@@ -26,7 +26,7 @@ Welcome to the MinersAI training space. This page is your launchpad for hands-on
 
 ## Open with NBViewer (non-interactive, no Gmail needed)
 
-[![Open in NBViewer - Colab Basics](https://img.shields.io/badge/NBViewer-Colab_Basics-4C9A2A?style=for-the-badge)](https://nbviewer.org/github/MinersAI/SGS_training/blob/HEAD/colab_basics.ipynb)
+[![Open in NBViewer - Colab Basics](https://img.shields.io/badge/NBViewer-Colab_Basics-4C9A2A?style=for-the-badge)](https://nbviewer.org/github/MinersAI/SGS_training/blob/main/colab_basics.ipynb)
 
 [![Open in NBViewer - Foundational Concepts](https://img.shields.io/badge/NBViewer-Step_1:_Foundational_Concepts-4C9A2A?style=for-the-badge)](https://nbviewer.org/github/MinersAI/SGS_training/blob/HEAD/sgs_foundational_concepts_preprocessing.ipynb)
 
